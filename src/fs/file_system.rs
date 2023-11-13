@@ -28,14 +28,14 @@ impl FileSystem {
         if self.read_only {
             return Err(error::read_only_fs());
         }
-
-        let path: Vec<_> = PathBuf::from(path).as_path().iter().collect();
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
         let mut sys = &mut self.root;
         if path.len() > 1 {
             for i in 0..(path.len() - 1) {
                 let component = path[i].to_str().unwrap().to_string();
                 if !sys.contains_key(&component) {
-                    sys.insert(component, FileSystemEntry::Directory(FileSystem::new()));
+                    sys.insert(component.clone(), FileSystemEntry::Directory(FileSystem::new()));
                 }
 
                 let child = match sys.get_mut(&component) {
@@ -73,7 +73,8 @@ impl FileSystem {
             return Err(error::read_only_fs());
         }
 
-        let path: Vec<_> = PathBuf::from(path).as_path().iter().collect();
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
         if path.len() == 0 {
             return Err(error::file_not_found());
         }
@@ -111,19 +112,21 @@ impl FileSystem {
     }
 
     pub fn get(&self, path: OsString) -> Result<FileSystemEntry> {
-        let path: Vec<_> = PathBuf::from(path).as_path().iter().collect();
-        let mut sys = &mut self.root;
-        for i in 0..path.len() {
-            let component = path[i].to_str().unwrap().to_string();
-            let Some(child) = sys.get(&component) else {
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
+        let mut sys = self;
+        for (i, component) in path.iter().enumerate() {
+            let component = component.to_str().unwrap().to_string();
+            let Some(child) = sys.root.get(&component) else {
                 break;
             };
+
             if i + 1 == path.len() {
                 return Ok(child.clone());
             }
             match child {
                 FileSystemEntry::Directory(dir) => {
-                    sys = &mut dir.root;
+                    sys = dir;
                 }
                 FileSystemEntry::File(_) => {
                     return Err(error::file_not_found());
@@ -135,20 +138,21 @@ impl FileSystem {
     }
 
     pub fn has(&self, path: OsString) -> bool {
-        let path: Vec<_> = PathBuf::from(path).as_path().iter().collect();
-        let mut sys = &mut self.root;
-        for i in 0..path.len() {
-            let component = path[i].to_str().unwrap().to_string();
-            let Some(child) = sys.get(&component) else {
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
+        let mut sys = self;
+        for (i, component) in path.iter().enumerate() {
+            let component = component.to_str().unwrap().to_string();
+            let Some(child) = sys.root.get(&component) else {
                 break;
             };
+
             if i + 1 == path.len() {
                 return true;
             }
-
             match child {
                 FileSystemEntry::Directory(dir) => {
-                    sys = &mut dir.root;
+                    sys = dir;
                 }
                 FileSystemEntry::File(_) => {}
             }

@@ -48,6 +48,7 @@ impl Host {
             addr,
             udp: Udp::new(udp_capacity),
             tcp: Tcp::new(tcp_capacity),
+            file_system: FileSystem::default(),
             next_ephemeral_port: 49152,
             elapsed: Duration::ZERO,
             now: None,
