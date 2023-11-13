@@ -1,0 +1,44 @@
+[package]
+name = "turmoil"
+# When releasing to crates.io:
+# - Update version number
+#   - README.md
+# - Update CHANGELOG.md
+# - Create git tag
+version = "0.5.8"
+edition = "2021"
+license = "MIT"
+authors = ["Tokio Contributors <team@tokio.rs>"]
+description = "Simulation testing framework for distributed systems"
+homepage = "https://github.com/tokio-rs/turmoil"
+repository = "https://github.com/tokio-rs/turmoil"
+readme = "README.md"
+keywords = ["Deterministic", "Simulation", "Testing"]
+categories = ["asynchronous", "network-programming", "simulation"]
+
+[workspace]
+members = ["examples/*"]
+
+[dependencies]
+bytes = "1.4"
+futures = "0.3"
+indexmap = "1.9"
+rand = { version = "0.8.5", features = ["small_rng"] }
+rand_distr = "0.4.3"
+regex = { version = "1", optional = true }
+scoped-tls = "1.0.1"
+tokio = { version = "1.25.0", features = ["full"] }
+tokio-stream = "0.1"
+tokio-test = "0.4.2"
+tokio-util = "0.7.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+doc-comment = "0.3.3"
+regex = "1"
+tracing-subscriber = "0.3"
+
+[features]
+default = []
+regex = ["dep:regex"]
