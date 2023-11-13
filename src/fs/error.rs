@@ -12,6 +12,10 @@ pub fn dir_not_found() -> Error {
     Error::new(ErrorKind::NotFound, "Directory not found")
 }
 
+pub fn cannot_read_dir() -> Error {
+    Error::new(ErrorKind::Other, "Cannot read directory as file")
+}
+
 pub fn file_or_dir_not_found() -> Error {
     Error::new(ErrorKind::NotFound, "File or directory not found")
 }

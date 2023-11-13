@@ -3,7 +3,8 @@ use std::ffi::OsString;
 use std::io::Result;
 use std::path::PathBuf;
 
-use super::error;
+use crate::fs::error;
+use crate::world::World;
 
 #[derive(Clone, Debug, Default)]
 pub struct FileSystem {
@@ -155,5 +156,16 @@ impl FileSystem {
 
         false
     }
-    
+
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+}
+
+pub async fn read(path: OsString) -> Result<Vec<u8>> {
+    let fs_entry = World::current(|world| world.current_host_mut().file_system.get(path))?;
+    match fs_entry {
+        FileSystemEntry::Directory(_) => Err(error::cannot_read_dir()),
+        FileSystemEntry::File(data) => Ok(data)
+    }
 }

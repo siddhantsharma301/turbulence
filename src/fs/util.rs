@@ -1,4 +1,5 @@
-use std::{io::Result, ffi::OsString};
+use std::io::Result;
+use std::ffi::OsString;
 
 use super::file::File;
 
