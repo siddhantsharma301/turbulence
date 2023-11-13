@@ -48,9 +48,7 @@ impl FileSystem {
                     FileSystemEntry::Directory(dir) => {
                         sys = &mut dir.root;
                     }
-                    FileSystemEntry::File(_) => {
-                        return Err(error::file_already_exists());
-                    }
+                    FileSystemEntry::File(_) => return Err(error::file_already_exists())
                 }
             }
         }
@@ -93,9 +91,7 @@ impl FileSystem {
                     FileSystemEntry::Directory(dir) => {
                         sys = &mut dir.root;
                     }
-                    FileSystemEntry::File(_) => {
-                        return Err(error::file_already_exists());
-                    }
+                    FileSystemEntry::File(_) => return Err(error::file_already_exists())
                 }
             }
         }
@@ -128,9 +124,7 @@ impl FileSystem {
                 FileSystemEntry::Directory(dir) => {
                     sys = dir;
                 }
-                FileSystemEntry::File(_) => {
-                    return Err(error::file_not_found());
-                }
+                FileSystemEntry::File(_) => return Err(error::file_not_found())
             }
         }
 
@@ -163,6 +157,14 @@ impl FileSystem {
 
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
+    }
+
+    pub fn set_pwd(&mut self, pwd: OsString) {
+        self.pwd = pwd;
+    }
+
+    pub fn pwd(self) -> String {
+        self.pwd.to_str().unwrap().to_string()
     }
 }
 
