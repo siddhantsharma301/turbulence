@@ -4,6 +4,8 @@ use std::ffi::OsString;
 use std::io::Result;
 use std::path::PathBuf;
 
+use tokio::io::AsyncWriteExt;
+
 use crate::fs::error;
 use crate::fs::open_options::OpenOptions;
 use crate::world::World;
@@ -236,7 +238,8 @@ pub async fn try_exists(path: OsString) -> Result<bool> {
     }))
 }
 
-// pub async fn write(path: OsString) -> Result<()> {
-//     let mut file = OpenOptions::new().create(true).write(true).open(path).await?;
-//     file.wri
-// }
+pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
+    let mut file = OpenOptions::new().create(true).write(true).open(path).await?;
+    file.write_all(&buffer).await?;
+    Ok(())
+}

@@ -9,12 +9,12 @@ use crate::fs::file_system::FileSystemEntry;
 
 #[derive(Clone, Debug, Default)]
 pub struct OpenOptions {
-    read: bool,
-    write: bool,
-    append: bool,
-    truncate: bool,
-    create: bool,
-    create_new: bool,
+    pub read: bool,
+    pub write: bool,
+    pub append: bool,
+    pub truncate: bool,
+    pub create: bool,
+    pub create_new: bool,
 }
 
 impl OpenOptions {
