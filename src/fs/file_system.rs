@@ -1,9 +1,11 @@
+use std::collections::btree_map::Entry;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Result;
 use std::path::PathBuf;
 
 use crate::fs::error;
+use crate::fs::open_options::OpenOptions;
 use crate::world::World;
 
 #[derive(Clone, Debug, Default)]
@@ -35,7 +37,10 @@ impl FileSystem {
             for i in 0..(path.len() - 1) {
                 let component = path[i].to_str().unwrap().to_string();
                 if !sys.contains_key(&component) {
-                    sys.insert(component.clone(), FileSystemEntry::Directory(FileSystem::new()));
+                    sys.insert(
+                        component.clone(),
+                        FileSystemEntry::Directory(FileSystem::new()),
+                    );
                 }
 
                 let child = match sys.get_mut(&component) {
@@ -48,7 +53,7 @@ impl FileSystem {
                     FileSystemEntry::Directory(dir) => {
                         sys = &mut dir.root;
                     }
-                    FileSystemEntry::File(_) => return Err(error::file_already_exists())
+                    FileSystemEntry::File(_) => return Err(error::file_already_exists()),
                 }
             }
         }
@@ -91,7 +96,7 @@ impl FileSystem {
                     FileSystemEntry::Directory(dir) => {
                         sys = &mut dir.root;
                     }
-                    FileSystemEntry::File(_) => return Err(error::file_already_exists())
+                    FileSystemEntry::File(_) => return Err(error::file_already_exists()),
                 }
             }
         }
@@ -124,11 +129,60 @@ impl FileSystem {
                 FileSystemEntry::Directory(dir) => {
                     sys = dir;
                 }
-                FileSystemEntry::File(_) => return Err(error::file_not_found())
+                FileSystemEntry::File(_) => return Err(error::file_not_found()),
             }
         }
 
         Err(error::file_or_dir_not_found())
+    }
+
+    pub fn update(&mut self, path: OsString, buffer: Vec<u8>) -> Result<()> {
+        let mut entry = self.get(path)?;
+        match entry {
+            FileSystemEntry::Directory(_) => return Err(error::file_not_found()),
+            FileSystemEntry::File(ref mut file) => {
+                *file = buffer.clone();
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn remove_dir(&mut self, path: OsString) -> Result<()> {
+        if self.read_only {
+            return Err(error::read_only_fs());
+        }
+
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
+        if path.len() == 0 {
+            return Err(error::file_not_found());
+        }
+        let mut sys = &mut self.root;
+        if path.len() > 1 {
+            for i in 0..(path.len() - 1) {
+                let component = path[i].to_str().unwrap().to_string();
+                let child = match sys.get_mut(&component) {
+                    Some(child) => child,
+                    None => return Err(error::dir_not_found()),
+                };
+                match child {
+                    FileSystemEntry::Directory(dir) => {
+                        sys = &mut dir.root;
+                    }
+                    FileSystemEntry::File(_) => return Err(error::dir_not_found()),
+                }
+            }
+        }
+
+        let Some(name) = path.last() else {
+            return Err(error::file_already_exists());
+        };
+        let name = name.to_str().unwrap().to_string();
+        // TODO: Check this
+        sys.remove(&name);
+
+        Ok(())
     }
 
     pub fn has(&self, path: OsString) -> bool {
@@ -172,6 +226,17 @@ pub async fn read(path: OsString) -> Result<Vec<u8>> {
     let fs_entry = World::current(|world| world.current_host_mut().file_system.get(path))?;
     match fs_entry {
         FileSystemEntry::Directory(_) => Err(error::cannot_read_dir()),
-        FileSystemEntry::File(data) => Ok(data)
+        FileSystemEntry::File(data) => Ok(data),
     }
 }
+
+pub async fn try_exists(path: OsString) -> Result<bool> {
+    Ok(World::current(|world| {
+        world.current_host_mut().file_system.has(path)
+    }))
+}
+
+// pub async fn write(path: OsString) -> Result<()> {
+//     let mut file = OpenOptions::new().create(true).write(true).open(path).await?;
+//     file.wri
+// }
