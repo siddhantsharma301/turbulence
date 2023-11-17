@@ -9,14 +9,14 @@ use crate::fs::error;
 use crate::fs::open_options::OpenOptions;
 use crate::world::World;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileSystem {
     root: HashMap<String, FileSystemEntry>,
     pwd: OsString,
     read_only: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FileSystemEntry {
     Directory(FileSystem),
     File(Vec<u8>),
@@ -251,7 +251,7 @@ pub async fn read(path: OsString) -> Result<Vec<u8>> {
     let fs_entry = World::current(|world| world.current_host_mut().file_system.get(path))?;
     match fs_entry {
         FileSystemEntry::Directory(_) => Err(error::cannot_read_dir()),
-        FileSystemEntry::File(data) => Ok(data)
+        FileSystemEntry::File(data) => Ok(data),
     }
 }
 
@@ -267,4 +267,126 @@ pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
         .await?;
     file.write_all(&buffer).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use std::{collections::HashMap, ffi::OsString};
+
+    use crate::fs::{file_system::FileSystemEntry, file::File};
+
+    use super::FileSystem;
+
+    #[test]
+    pub fn test_default() {
+        let fs = FileSystem::default();
+        let expected = FileSystem {
+            root: HashMap::new(),
+            pwd: "".into(),
+            read_only: false,
+        };
+        assert_eq!(fs, expected);
+    }
+
+    #[test]
+    pub fn test_create_dir() {
+        let mut fs = FileSystem::default();
+
+        let dir_name: OsString = "test".to_string().into();
+        let r = fs.create_dir(dir_name.clone());
+        let expected = (
+            dir_name.into_string().unwrap(),
+            FileSystemEntry::Directory(FileSystem::default()),
+        );
+        assert!(r.is_ok());
+        assert_eq!(fs.root, HashMap::from([expected]));
+
+        let mut fs = FileSystem::default();
+        fs.read_only = true;
+        let dir_name: OsString = "test".to_string().into();
+        let r = fs.create_dir(dir_name.clone());
+        assert!(r.is_err());
+        assert_eq!(fs.root, HashMap::new());
+
+        let mut fs = FileSystem::default();
+        let dir_name: OsString = "test/test".to_string().into();
+        let r = fs.create_dir(dir_name.clone());
+        let expected = (
+            "test".to_string(),
+            FileSystemEntry::Directory(FileSystem {
+                root: HashMap::from([(
+                    "test".to_string().into(),
+                    FileSystemEntry::Directory(FileSystem::default()),
+                )]),
+                pwd: "".to_string().into(),
+                read_only: false,
+            }),
+        );
+        assert!(r.is_ok());
+        assert_eq!(fs.root, HashMap::from([expected]));
+    }
+
+    #[test]
+    pub fn test_create_file() {
+        let mut fs = FileSystem::default();
+
+        let file_name: OsString = "test.txt".to_string().into();
+        let r = fs.create_file(file_name.clone(), false);
+        let expected = (
+            file_name.clone().into_string().unwrap(),
+            FileSystemEntry::File(Vec::new()),
+        );
+        assert!(r.is_ok());
+        assert_eq!(fs.root, HashMap::from([expected]));
+
+        let r = fs.create_file(file_name.clone(), false);
+        assert!(r.is_ok());
+        let expected = (
+            file_name.into_string().unwrap(),
+            FileSystemEntry::File(Vec::new()),
+        );
+        assert_eq!(fs.root, HashMap::from([expected]));
+    }
+
+    #[test]
+    pub fn test_create_dir_and_file() {
+        let mut fs = FileSystem::default();
+
+        let file_name: OsString = "test.txt".to_string().into();
+        let r = fs.create_file(file_name.clone(), false);
+        assert!(r.is_ok());
+        let dir_name: OsString = "test".to_string().into();
+        let r = fs.create_dir(dir_name.clone());
+        assert!(r.is_ok());
+
+        let expected = [
+            (
+                file_name.into_string().unwrap(),
+                FileSystemEntry::File(Vec::new()),
+            ),
+            (
+                dir_name.into_string().unwrap(),
+                FileSystemEntry::Directory(FileSystem::default()),
+            ),
+        ];
+
+        assert_eq!(fs.root, HashMap::from(expected));
+    }
+
+    #[test]
+    pub fn test_get() {
+        let mut fs = FileSystem::default();
+        let file_name: OsString = "test.txt".to_string().into();
+        let r = fs.create_file(file_name.clone(), false);
+        assert!(r.is_ok());
+
+        let fetched = fs.get(file_name.clone());
+        assert!(fetched.is_ok());
+        let file = fetched.unwrap();
+        let expected = FileSystemEntry::File(Vec::new());
+        assert_eq!(file, expected);
+
+        let fetched = fs.get("no".to_string().into());
+        assert!(fetched.is_err());
+    }
 }
