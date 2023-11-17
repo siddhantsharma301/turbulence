@@ -2,14 +2,14 @@ use std::ffi::OsString;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::fs::error;
 use crate::fs::open_options::OpenOptions;
 use crate::world::World;
 
 pub struct File {
-    buffer: Vec<u8>,
+    pub buffer: Vec<u8>,
     cursor: usize,
     path: OsString,
     open_options: OpenOptions,
@@ -66,10 +66,10 @@ impl AsyncRead for File {
 impl AsyncWrite for File {
     fn poll_write(
         self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        if !self.open_options.write || !self.open_options.append {
+        if !self.open_options.write && !self.open_options.append {
             return Poll::Ready(Err(error::read_only_fs()));
         }
         let file = self.get_mut();
@@ -79,7 +79,7 @@ impl AsyncWrite for File {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         let _ = World::current(|world| {
             world
                 .current_host_mut()

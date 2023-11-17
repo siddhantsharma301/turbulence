@@ -1,3 +1,4 @@
+use crate::config::MessageLoss;
 use crate::envelope::{Envelope, Protocol};
 use crate::host::Host;
 use crate::rt::Rt;
@@ -11,6 +12,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::time::Instant;
+use bytes::Bytes;
 
 /// Describes the network topology.
 pub(crate) struct Topology {
@@ -131,6 +133,7 @@ impl<'a> Iterator for LinkIter<'a> {
     }
 }
 
+
 /// A two-way link between two hosts on the network.
 struct Link {
     state: State,
@@ -243,6 +246,14 @@ impl Topology {
         self.links[&Pair::new(a, b)].hold();
     }
 
+    pub(crate) fn corrupt(&mut self, rand: &mut dyn RngCore, a: IpAddr, b: IpAddr) {
+        let link = self.links.get_mut(&Pair::new(a, b));
+        match link {
+            Some(l) => l.rand_corrupt(rand),
+            None => {}
+        }
+    }
+
     pub(crate) fn release(&mut self, a: IpAddr, b: IpAddr) {
         self.links[&Pair::new(a, b)].release();
     }
@@ -310,6 +321,7 @@ impl Link {
         tracing::trace!(target: TRACING_TARGET, ?src, ?dst, protocol = %message, "Send");
 
         self.rand_partition_or_repair(global_config, rand);
+        self.rand_corrupt(rand);
         self.enqueue(global_config, rand, src, dst, message);
         self.process_deliverables();
     }
@@ -423,6 +435,21 @@ impl Link {
             }
             _ => {}
         }
+    }
+
+    pub fn rand_corrupt(&mut self, rand: &mut dyn RngCore) {
+        let mut replace = VecDeque::new();
+        let msg_loss = MessageLoss::default();
+        let config = self.config.message_loss.as_ref().unwrap_or(&msg_loss);
+        let fail_rate = config.fail_rate;
+        for mut msg in self.sent.drain(..) {
+            let fail = fail_rate > 0.0 && rand.gen_bool(fail_rate);
+            if fail {
+                msg.protocol.corrupt();
+            }
+            replace.push_back(msg);
+        }
+        self.sent = replace;
     }
 
     fn hold(&mut self) {

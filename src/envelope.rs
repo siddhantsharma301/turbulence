@@ -2,6 +2,7 @@ use std::{fmt::Display, net::SocketAddr};
 
 use bytes::Bytes;
 use tokio::sync::oneshot;
+use rand::Rng;
 
 #[derive(Debug)]
 pub(crate) struct Envelope {
@@ -17,9 +18,26 @@ pub enum Protocol {
     Udp(Datagram),
 }
 
+impl Protocol {
+    pub fn corrupt(&mut self) {
+        match self {
+            Protocol::Tcp(segment) => segment.corrupt(),
+            Protocol::Udp(datagram) => datagram.corrupt(),
+        }
+    }
+}
+
 /// UDP datagram.
 #[derive(Debug)]
 pub struct Datagram(pub Bytes);
+
+impl Datagram {
+    pub fn corrupt(&mut self) {
+        let mut rng = rand::thread_rng();
+        let random_bytes: Vec<u8> = (0..self.0.len()).map(|_| rng.gen()).collect();
+        self.0 = Bytes::from(random_bytes);
+    }
+}
 
 /// This is a simplification of real TCP.
 ///
@@ -32,6 +50,21 @@ pub enum Segment {
     Data(u64, Bytes),
     Fin(u64),
     Rst,
+}
+
+impl Segment {
+    pub fn corrupt(&mut self) {
+        match self {
+            Segment::Syn(_) => {},
+            Segment::Data(_, data) => {
+                let mut rng = rand::thread_rng();
+                let random_bytes: Vec<u8> = (0..data.len()).map(|_| rng.gen()).collect();
+                *data = Bytes::from(random_bytes);
+            }
+            Segment::Fin(_) => {}
+            Segment::Rst => {}
+        }
+    }
 }
 
 #[derive(Debug)]

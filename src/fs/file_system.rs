@@ -1,4 +1,3 @@
-use std::collections::btree_map::Entry;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::Result;
@@ -224,12 +223,22 @@ impl FileSystem {
     }
 }
 
-pub async fn read(path: OsString) -> Result<Vec<u8>> {
-    let fs_entry = World::current(|world| world.current_host_mut().file_system.get(path))?;
-    match fs_entry {
-        FileSystemEntry::Directory(_) => Err(error::cannot_read_dir()),
-        FileSystemEntry::File(data) => Ok(data),
-    }
+pub async fn copy(from: OsString, to: OsString) -> Result<()> {
+    let data = read(from).await?;
+    write(to, data).await
+}
+
+pub async fn create_file(path: OsString, replace: bool) -> Result<()> {
+    World::current(|world| {
+        world
+            .current_host_mut()
+            .file_system
+            .create_file(path, replace)
+    })
+}
+
+pub async fn create_dir(path: OsString) -> Result<()> {
+    World::current(|world| world.current_host_mut().file_system.create_dir(path))
 }
 
 pub async fn try_exists(path: OsString) -> Result<bool> {
@@ -238,8 +247,24 @@ pub async fn try_exists(path: OsString) -> Result<bool> {
     }))
 }
 
+pub async fn read(path: OsString) -> Result<Vec<u8>> {
+    let fs_entry = World::current(|world| world.current_host_mut().file_system.get(path))?;
+    match fs_entry {
+        FileSystemEntry::Directory(_) => Err(error::cannot_read_dir()),
+        FileSystemEntry::File(data) => Ok(data)
+    }
+}
+
+pub async fn remove_dir(path: OsString) -> Result<()> {
+    World::current(|world| world.current_host_mut().file_system.remove_dir(path))
+}
+
 pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
-    let mut file = OpenOptions::new().create(true).write(true).open(path).await?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(path)
+        .await?;
     file.write_all(&buffer).await?;
     Ok(())
 }

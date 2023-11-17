@@ -82,7 +82,7 @@ mod readme;
 
 mod builder;
 
-use std::net::IpAddr;
+use std::{ffi::OsString, net::IpAddr};
 
 pub use builder::Builder;
 
@@ -99,6 +99,7 @@ pub use envelope::{Datagram, Protocol, Segment};
 
 mod error;
 pub use error::Result;
+use tokio::io::AsyncWriteExt;
 
 mod host;
 pub use host::elapsed;
@@ -189,3 +190,29 @@ pub fn partition(a: impl ToIpAddrs, b: impl ToIpAddrs) {
 pub fn repair(a: impl ToIpAddrs, b: impl ToIpAddrs) {
     World::current(|world| world.repair_many(a, b))
 }
+
+// pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
+//     let res = World::current(|world| {
+//         world
+//             .current_host_mut()
+//             .file_system
+//             .create_file(path.clone(), true)
+//     })
+//     .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>);
+//     match res {
+//         Ok(_) => {},
+//         Err(e) => return Err(e)
+//     }
+//     World::current(|world| world.current_host_mut().file_system.update(path, buffer))
+//         .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>)
+// }
+
+// pub async fn read(path: OsString) -> Result<Vec<u8>> {
+//     fs::file_system::read(path)
+//         .await
+//         .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>)
+// }
+
+// pub async fn has(path: OsString) -> bool {
+//     World::current(|world| world.current_host_mut().file_system.has(path))
+// }
