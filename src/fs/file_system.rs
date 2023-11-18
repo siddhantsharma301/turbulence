@@ -344,7 +344,6 @@ pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
         .create(true)
         .open(path.clone())
         .await?;
-    // TODO: Fix this function
     World::current(|world| world.current_host_mut().file_system.update(path, buffer))?;
     Ok(())
 }

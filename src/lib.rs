@@ -99,6 +99,7 @@ pub use envelope::{Datagram, Protocol, Segment};
 
 mod error;
 pub use error::Result;
+use fs::open_options;
 use tokio::io::AsyncWriteExt;
 
 mod host;
@@ -191,28 +192,24 @@ pub fn repair(a: impl ToIpAddrs, b: impl ToIpAddrs) {
     World::current(|world| world.repair_many(a, b))
 }
 
-// pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
-//     let res = World::current(|world| {
-//         world
-//             .current_host_mut()
-//             .file_system
-//             .create_file(path.clone(), true)
-//     })
-//     .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>);
-//     match res {
-//         Ok(_) => {},
-//         Err(e) => return Err(e)
-//     }
-//     World::current(|world| world.current_host_mut().file_system.update(path, buffer))
-//         .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>)
-// }
+pub async fn append(path: OsString, buffer: Vec<u8>) -> Result<()> {
+    fs::file_system::append(path, buffer)
+        .await
+        .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>)
+}
 
-// pub async fn read(path: OsString) -> Result<Vec<u8>> {
-//     fs::file_system::read(path)
-//         .await
-//         .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>)
-// }
+pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
+    fs::file_system::write(path, buffer)
+        .await
+        .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>)
+}
 
-// pub async fn has(path: OsString) -> bool {
-//     World::current(|world| world.current_host_mut().file_system.has(path))
-// }
+pub async fn read(path: OsString) -> Result<Vec<u8>> {
+    fs::file_system::read(path)
+        .await
+        .map_err(|err| Box::new(err) as Box<dyn std::error::Error + 'static>)
+}
+
+pub async fn has(path: OsString) -> bool {
+    World::current(|world| world.current_host_mut().file_system.has(path))
+}

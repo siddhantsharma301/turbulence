@@ -46,7 +46,7 @@ fn main() {
                     ctr_os.clone(),
                     counter.to_string().into_bytes(),
                 ).await;
-                if let Ok(val) = turmoil::fs::file_system::read(ctr_os.clone()).await {
+                if let Ok(val) = turmoil::read(ctr_os.clone()).await {
                     println!("value in file is {:?}", val);
                 } else {
                     panic!("Failed to read value from file");
