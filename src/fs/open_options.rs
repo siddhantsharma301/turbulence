@@ -7,7 +7,7 @@ use crate::fs::error;
 use crate::fs::file::File;
 use crate::fs::file_system::FileSystemEntry;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OpenOptions {
     pub read: bool,
     pub write: bool,
@@ -82,5 +82,46 @@ impl OpenOptions {
         let cursor = if self.append { data.len() } else { 0 };
 
         Ok(File::new(data, cursor, path, self.clone()))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::Builder;
+    use crate::fs::file::File;
+    use crate::fs::file_system::FileSystemEntry;
+    use crate::fs::open_options::OpenOptions;
+    use crate::world::World;
+
+    #[test]
+    fn test_open() {
+        let mut sim = Builder::new().build();
+        sim.host("my_host", || async {
+            let mut open_options = OpenOptions::new();
+            let open = open_options.write(true).create(true);
+            let r = open.open("test".to_string().into()).await;
+            assert!(r.is_ok());
+
+            let file = r.unwrap();
+            let expected = File::new(Vec::new(), 0, "test".to_string().into(), open.clone());
+            assert_eq!(file, expected);
+
+            let r = World::current(|world| {
+                world.current_host_mut().file_system.update("test".to_string().into(), "a".into())
+            });
+            assert!(r.is_ok());
+
+            let r = World::current(|world| {
+                world.current_host_mut().file_system.get("test".to_string().into())
+            });
+            assert!(r.is_ok());
+            let file = r.unwrap();
+            assert_eq!(file, FileSystemEntry::File("a".into()));
+
+            Ok(())
+        });
+
+        let r = sim.run();
+        assert!(r.is_ok())
     }
 }

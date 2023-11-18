@@ -113,6 +113,30 @@ impl FileSystem {
         Ok(())
     }
 
+    pub fn has(&self, path: OsString) -> bool {
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
+        let mut sys = self;
+        for (i, component) in path.iter().enumerate() {
+            let component = component.to_str().unwrap().to_string();
+            let Some(child) = sys.root.get(&component) else {
+                break;
+            };
+
+            if i + 1 == path.len() {
+                return true;
+            }
+            match child {
+                FileSystemEntry::Directory(dir) => {
+                    sys = dir;
+                }
+                FileSystemEntry::File(_) => {}
+            }
+        }
+
+        false
+    }
+
     pub fn get(&self, path: OsString) -> Result<FileSystemEntry> {
         let pb = PathBuf::from(&path);
         let path: Vec<_> = pb.as_path().iter().collect();
@@ -137,16 +161,86 @@ impl FileSystem {
         Err(error::file_or_dir_not_found())
     }
 
-    pub fn update(&mut self, path: OsString, buffer: Vec<u8>) -> Result<()> {
-        let mut entry = self.get(path)?;
-        match entry {
-            FileSystemEntry::Directory(_) => return Err(error::file_not_found()),
-            FileSystemEntry::File(ref mut file) => {
-                *file = buffer.clone();
+    pub fn append(&mut self, path: OsString, buffer: Vec<u8>) -> Result<()> {
+        if self.read_only {
+            return Err(error::read_only_fs());
+        }
+
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
+        if path.len() == 0 {
+            return Err(error::file_not_found());
+        }
+        let mut sys = &mut self.root;
+        if path.len() > 1 {
+            for i in 0..(path.len() - 1) {
+                let component = path[i].to_str().unwrap().to_string();
+                let child = match sys.get_mut(&component) {
+                    Some(child) => child,
+                    None => return Err(error::dir_not_found()),
+                };
+                match child {
+                    FileSystemEntry::Directory(dir) => {
+                        sys = &mut dir.root;
+                    }
+                    FileSystemEntry::File(_) => return Err(error::dir_not_found()),
+                }
+            }
+        }
+
+        let Some(file_name) = path.last() else {
+            return Err(error::file_already_exists());
+        };
+        let file_name = file_name.to_str().unwrap().to_string();
+        if let Some(entry) = sys.get_mut(&file_name) {
+            if let FileSystemEntry::File(data) = entry {
+                data.extend(buffer);
+                return Ok(());
             }
         }
 
         Ok(())
+    }
+
+    pub fn update(&mut self, path: OsString, buffer: Vec<u8>) -> Result<()> {
+        if self.read_only {
+            return Err(error::read_only_fs());
+        }
+
+        let pb = PathBuf::from(&path);
+        let path: Vec<_> = pb.as_path().iter().collect();
+        if path.len() == 0 {
+            return Err(error::file_not_found());
+        }
+        let mut sys = &mut self.root;
+        if path.len() > 1 {
+            for i in 0..(path.len() - 1) {
+                let component = path[i].to_str().unwrap().to_string();
+                let child = match sys.get_mut(&component) {
+                    Some(child) => child,
+                    None => return Err(error::dir_not_found()),
+                };
+                match child {
+                    FileSystemEntry::Directory(dir) => {
+                        sys = &mut dir.root;
+                    }
+                    FileSystemEntry::File(_) => return Err(error::dir_not_found()),
+                }
+            }
+        }
+
+        let Some(file_name) = path.last() else {
+            return Err(error::file_already_exists());
+        };
+        let file_name = file_name.to_str().unwrap().to_string();
+        if let Some(entry) = sys.get_mut(&file_name) {
+            if let FileSystemEntry::File(data) = entry {
+                *data = buffer;
+                return Ok(());
+            }
+        }
+
+        Err(error::file_not_found())
     }
 
     pub fn remove_dir(&mut self, path: OsString) -> Result<()> {
@@ -180,34 +274,9 @@ impl FileSystem {
             return Err(error::file_already_exists());
         };
         let name = name.to_str().unwrap().to_string();
-        // TODO: Check this
         sys.remove(&name);
 
         Ok(())
-    }
-
-    pub fn has(&self, path: OsString) -> bool {
-        let pb = PathBuf::from(&path);
-        let path: Vec<_> = pb.as_path().iter().collect();
-        let mut sys = self;
-        for (i, component) in path.iter().enumerate() {
-            let component = component.to_str().unwrap().to_string();
-            let Some(child) = sys.root.get(&component) else {
-                break;
-            };
-
-            if i + 1 == path.len() {
-                return true;
-            }
-            match child {
-                FileSystemEntry::Directory(dir) => {
-                    sys = dir;
-                }
-                FileSystemEntry::File(_) => {}
-            }
-        }
-
-        false
     }
 
     pub fn set_read_only(&mut self, read_only: bool) {
@@ -221,6 +290,16 @@ impl FileSystem {
     pub fn pwd(self) -> String {
         self.pwd.to_str().unwrap().to_string()
     }
+}
+
+pub async fn append(path: OsString, buffer: Vec<u8>) -> Result<()> {
+    let _ = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(true)
+        .open(path.clone())
+        .await?;
+    World::current(|world| world.current_host_mut().file_system.append(path, buffer))
 }
 
 pub async fn copy(from: OsString, to: OsString) -> Result<()> {
@@ -260,25 +339,25 @@ pub async fn remove_dir(path: OsString) -> Result<()> {
 }
 
 pub async fn write(path: OsString, buffer: Vec<u8>) -> Result<()> {
-    let mut file = OpenOptions::new()
+    let _ = OpenOptions::new()
         .write(true)
         .create(true)
-        .open(path)
+        .open(path.clone())
         .await?;
-    file.write_all(&buffer).await?;
+    // TODO: Fix this function
+    World::current(|world| world.current_host_mut().file_system.update(path, buffer))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, ffi::OsString};
+    use std::collections::HashMap;
+    use std::ffi::OsString;
 
-    use crate::fs::{file_system::FileSystemEntry, file::File};
-
-    use super::FileSystem;
+    use crate::fs::file_system::{FileSystem, FileSystemEntry};
 
     #[test]
-    pub fn test_default() {
+    fn test_default() {
         let fs = FileSystem::default();
         let expected = FileSystem {
             root: HashMap::new(),
@@ -289,7 +368,7 @@ mod test {
     }
 
     #[test]
-    pub fn test_create_dir() {
+    fn test_create_dir() {
         let mut fs = FileSystem::default();
 
         let dir_name: OsString = "test".to_string().into();
@@ -327,7 +406,7 @@ mod test {
     }
 
     #[test]
-    pub fn test_create_file() {
+    fn test_create_file() {
         let mut fs = FileSystem::default();
 
         let file_name: OsString = "test.txt".to_string().into();
@@ -349,7 +428,7 @@ mod test {
     }
 
     #[test]
-    pub fn test_create_dir_and_file() {
+    fn test_create_dir_and_file() {
         let mut fs = FileSystem::default();
 
         let file_name: OsString = "test.txt".to_string().into();
@@ -374,13 +453,26 @@ mod test {
     }
 
     #[test]
-    pub fn test_get() {
+    fn test_has() {
         let mut fs = FileSystem::default();
         let file_name: OsString = "test.txt".to_string().into();
         let r = fs.create_file(file_name.clone(), false);
         assert!(r.is_ok());
 
-        let fetched = fs.get(file_name.clone());
+        let fetched = fs.has(file_name.clone());
+        assert!(fetched);
+        let fetched = fs.has("no".to_string().into());
+        assert!(!fetched);
+    }
+
+    #[test]
+    fn test_get() {
+        let mut fs = FileSystem::default();
+        let file_name: OsString = "test.txt".to_string().into();
+        let r = fs.create_file(file_name.clone(), false);
+        assert!(r.is_ok());
+
+        let fetched = fs.get(file_name);
         assert!(fetched.is_ok());
         let file = fetched.unwrap();
         let expected = FileSystemEntry::File(Vec::new());
@@ -388,5 +480,43 @@ mod test {
 
         let fetched = fs.get("no".to_string().into());
         assert!(fetched.is_err());
+    }
+
+    #[test]
+    fn test_append() {
+        let mut fs = FileSystem::default();
+
+        let file_name: OsString = "test.txt".to_string().into();
+        let r = fs.create_file(file_name.clone(), false);
+        assert!(r.is_ok());
+
+        let mut buf = Vec::from([1, 2, 3]);
+        let r = fs.update(file_name.clone(), buf.clone());
+        assert!(r.is_ok());
+        let r = fs.append(file_name.clone(), buf.clone());
+        assert!(r.is_ok());
+        let fetched = fs.get(file_name);
+        assert!(fetched.is_ok());
+        let file = fetched.unwrap();
+        buf.extend(buf.clone());
+        println!("file is {:?}, buf is {:?}", file.clone(), buf.clone());
+        assert_eq!(file, FileSystemEntry::File(buf));
+    }
+
+    #[test]
+    fn test_update() {
+        let mut fs = FileSystem::default();
+
+        let file_name: OsString = "test.txt".to_string().into();
+        let r = fs.create_file(file_name.clone(), false);
+        assert!(r.is_ok());
+
+        let buf = Vec::from([1, 2, 3]);
+        let r = fs.update(file_name.clone(), buf.clone());
+        assert!(r.is_ok());
+        let fetched = fs.get(file_name);
+        assert!(fetched.is_ok());
+        let file = fetched.unwrap();
+        assert_eq!(file, FileSystemEntry::File(buf));
     }
 }

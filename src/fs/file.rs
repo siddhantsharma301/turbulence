@@ -8,8 +8,9 @@ use crate::fs::error;
 use crate::fs::open_options::OpenOptions;
 use crate::world::World;
 
+#[derive(Debug, PartialEq)]
 pub struct File {
-    pub buffer: Vec<u8>,
+    buffer: Vec<u8>,
     cursor: usize,
     path: OsString,
     open_options: OpenOptions,

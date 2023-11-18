@@ -23,8 +23,8 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9997);
-    let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9998);
-    let addr2 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
+    // let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9998);
+    // let addr2 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
 
     let mut sim = Builder::new()
         .simulation_duration(Duration::from_secs(60))
@@ -42,12 +42,15 @@ fn main() {
                 let mut counter = counter_value.lock().await;
                 *counter += 1;
                 let ctr_os: OsString = counter_path.to_string().into();
-                // let _ = turmoil::write(ctr_os.clone(), counter.to_string().as_bytes().to_vec()).await;
-                let f = turmoil::fs::file_system::write(ctr_os.clone(), counter.to_string().as_bytes().to_vec()).await;
-                println!("f {:?}", f);
-                // let val = turmoil::read(ctr_os).await;
-                let val = turmoil::fs::file_system::read(ctr_os).await;
-                println!("value in file is {:?}", val);
+                let _ = turmoil::fs::file_system::append(
+                    ctr_os.clone(),
+                    counter.to_string().into_bytes(),
+                ).await;
+                if let Ok(val) = turmoil::fs::file_system::read(ctr_os.clone()).await {
+                    println!("value in file is {:?}", val);
+                } else {
+                    panic!("Failed to read value from file");
+                }
                 format!("Hello {name} counter is {counter}!")
             }),
         );
