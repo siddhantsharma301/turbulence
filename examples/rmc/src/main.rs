@@ -23,8 +23,6 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9997);
-    // let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9998);
-    // let addr2 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
 
     let mut sim = Builder::new()
         .simulation_duration(Duration::from_secs(60))
@@ -77,6 +75,8 @@ fn main() {
             let client = Client::builder().build(connector::connector());
 
             // turmoil::hold("client", "server");
+            // turmoil::corrupt("client", "server");
+            // turmoil::release("client", "server");
 
             let mut request = Request::new(Body::empty());
             *request.uri_mut() = Uri::from_static("http://server:9997/greet/foo");

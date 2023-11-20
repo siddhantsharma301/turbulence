@@ -3,8 +3,6 @@ use std::ffi::OsString;
 use std::io::Result;
 use std::path::PathBuf;
 
-use tokio::io::AsyncWriteExt;
-
 use crate::fs::error;
 use crate::fs::open_options::OpenOptions;
 use crate::world::World;

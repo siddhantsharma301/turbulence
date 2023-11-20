@@ -12,7 +12,6 @@ use std::io::{Error, ErrorKind, Result};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::time::Instant;
-use bytes::Bytes;
 
 /// Describes the network topology.
 pub(crate) struct Topology {
@@ -132,7 +131,6 @@ impl<'a> Iterator for LinkIter<'a> {
         })
     }
 }
-
 
 /// A two-way link between two hosts on the network.
 struct Link {

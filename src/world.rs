@@ -100,6 +100,10 @@ impl World {
         });
     }
 
+    pub (crate) fn corrupt(&mut self, a: impl ToIpAddr, b: impl ToIpAddr) {
+        self.topology.corrupt(&mut self.rng, a.to_ip_addr(&mut self.dns), b.to_ip_addr(&mut self.dns));
+    }
+
     pub(crate) fn release(&mut self, a: IpAddr, b: IpAddr) {
         self.topology.release(a, b);
     }

@@ -192,6 +192,10 @@ pub fn repair(a: impl ToIpAddrs, b: impl ToIpAddrs) {
     World::current(|world| world.repair_many(a, b))
 }
 
+pub fn corrupt(a: impl ToIpAddr, b: impl ToIpAddr) {
+    World::current(|world| world.corrupt(a, b))
+}
+
 pub async fn append(path: OsString, buffer: Vec<u8>) -> Result<()> {
     fs::file_system::append(path, buffer)
         .await
