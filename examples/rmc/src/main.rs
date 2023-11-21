@@ -63,32 +63,8 @@ fn main() {
                             yield res.map(|(s, _)| s);
                         }
                         peer_message = rx.recv() => {
-                            let mut peer_message = peer_message.unwrap();
-                            let digest = peer_message.data.clone();
-                            let mut signatures = peer_message.signatures;
-
-                            let my_sig = signing_key.sign(&digest);
-                            signatures.push(my_sig);
-                            peer_message.signatures = signatures.clone();
-
-                            if (signatures.len() as u64) < RMC_THRESHOLD {
-                                match tx.send(peer_message) {
-                                    Ok(_) => {},
-                                    Err(_) => println!("Failed to send message to peers"),
-                                }
-                            }
-
-                            let comma_separated: String = signatures.iter()
-                                .map(|sig| sig.to_vec())
-                                .map(|bytes| bytes.iter().map(|&x| x.to_string()).collect::<Vec<String>>().join(","))
-                                .collect::<Vec<String>>()
-                                .join(",");
-                            let path = OsString::from_vec(hex::encode(&digest.clone()).into());
-                            if !turmoil::has(path.clone()).await {
-                                let _ = turmoil::append(path, comma_separated.into()).await;
-                            } else {
-                                let _ = turmoil::write(path, comma_separated.into()).await;
-                            }
+                            let peer_message = peer_message.unwrap();
+                            process_peer_message(peer_message, &signing_key, tx.clone()).await
                         }
                     }
                 }
@@ -116,28 +92,8 @@ fn main() {
                             yield res.map(|(s, _)| s);
                         }
                         peer_message = rx.recv() => {
-                            let mut peer_message = peer_message.unwrap();
-                            let digest = peer_message.data.clone();
-                            let mut signatures = peer_message.signatures;
-
-                            let my_sig = signing_key.sign(&digest);
-                            signatures.push(my_sig);
-                            peer_message.signatures = signatures.clone();
-
-                            if (signatures.len() as u64) < RMC_THRESHOLD {
-                                match tx.send(peer_message) {
-                                    Ok(_) => {},
-                                    Err(_) => println!("Failed to send message to peers"),
-                                }
-                            }
-
-                            let comma_separated: String = signatures.iter()
-                                .map(|sig| sig.to_vec())
-                                .map(|bytes| bytes.iter().map(|&x| x.to_string()).collect::<Vec<String>>().join(","))
-                                .collect::<Vec<String>>()
-                                .join(",");
-                            let path = OsString::from_vec(hex::encode(&digest.clone()).into());
-                            let _ = turmoil::write(path, comma_separated.into()).await;
+                            let peer_message = peer_message.unwrap();
+                            process_peer_message(peer_message, &signing_key, tx.clone()).await
                         }
                     }
                 }
@@ -165,28 +121,8 @@ fn main() {
                             yield res.map(|(s, _)| s);
                         }
                         peer_message = rx.recv() => {
-                            let mut peer_message = peer_message.unwrap();
-                            let digest = peer_message.data.clone();
-                            let mut signatures = peer_message.signatures;
-
-                            let my_sig = signing_key.sign(&digest);
-                            signatures.push(my_sig);
-                            peer_message.signatures = signatures.clone();
-
-                            if (signatures.len() as u64) < RMC_THRESHOLD {
-                                match tx.send(peer_message) {
-                                    Ok(_) => {},
-                                    Err(_) => println!("Failed to send message to peers"),
-                                }
-                            }
-
-                            let comma_separated: String = signatures.iter()
-                                .map(|sig| sig.to_vec())
-                                .map(|bytes| bytes.iter().map(|&x| x.to_string()).collect::<Vec<String>>().join(","))
-                                .collect::<Vec<String>>()
-                                .join(",");
-                            let path = OsString::from_vec(hex::encode(&digest.clone()).into());
-                            let _ = turmoil::write(path, comma_separated.into()).await;
+                            let peer_message = peer_message.unwrap();
+                            process_peer_message(peer_message, &signing_key, tx.clone()).await
                         }
                     }
                 }
@@ -302,6 +238,45 @@ fn generate_multicast_server(
             signing_key,
         }),
     )
+}
+
+async fn process_peer_message(
+    mut peer_message: RmcPeerMessage,
+    signing_key: &SigningKey,
+    tx: broadcast::Sender<RmcPeerMessage>,
+) {
+    let digest = peer_message.data.clone();
+    let mut signatures = peer_message.signatures;
+
+    let my_sig = signing_key.sign(&digest);
+    signatures.push(my_sig);
+    peer_message.signatures = signatures.clone();
+
+    if (signatures.len() as u64) < RMC_THRESHOLD {
+        match tx.send(peer_message) {
+            Ok(_) => {}
+            Err(_) => println!("Failed to send message to peers"),
+        }
+    }
+
+    let comma_separated: String = signatures
+        .iter()
+        .map(|sig| sig.to_vec())
+        .map(|bytes| {
+            bytes
+                .iter()
+                .map(|&x| x.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        })
+        .collect::<Vec<String>>()
+        .join(",");
+    let path = OsString::from_vec(hex::encode(&digest.clone()).into());
+    if !turmoil::has(path.clone()).await {
+        let _ = turmoil::append(path, comma_separated.into()).await;
+    } else {
+        let _ = turmoil::write(path, comma_separated.into()).await;
+    }
 }
 
 mod connector {
