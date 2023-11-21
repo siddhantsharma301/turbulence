@@ -31,23 +31,19 @@ fn main() {
 
     tracing_subscriber::fmt::init();
 
-    let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
-    // let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
+    let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9998);
+    let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
+    let (tx, _rx) = broadcast::channel::<RmcPeerMessage>(1);
+    let tx0 = tx.clone();
+    let tx1 = tx.clone();
+    let greeter0 = generate_multicast_server(tx0.clone(), &[0u8; 32]);
+    let greeter1 = generate_multicast_server(tx1.clone(), &[1u8; 32]);
 
     let mut sim = Builder::new().build();
 
-    let (tx, _rx) = broadcast::channel::<RmcPeerMessage>(1);
-
-    let signing_key: SigningKey = SigningKey::from_bytes(&[0u8; 32]);
-
-    let greeter = MulticastServer::new(MyMulticaster {
-        sender: tx.clone(),
-        signing_key,
-    });
-
-    sim.host("server", move || {
-        let greeter = greeter.clone();
-        let tx = tx.clone(); // Clone tx here
+    sim.host("server0", move || {
+        let greeter = greeter0.clone();
+        let tx = tx0.clone(); // Clone tx here
         async move {
             Server::builder(from_stream(async_stream::stream! {
                 let listener = net::TcpListener::bind(addr0).await?;
@@ -57,8 +53,8 @@ fn main() {
                         res = listener.accept() => {
                             yield res.map(|(s, _)| s);
                         }
-                        _ = rx.recv() => {
-                            // Handle broadcast message
+                        peer_message = rx.recv() => {
+                            println!("Message received {:?}", peer_message);
                         }
                     }
                 }
@@ -69,13 +65,40 @@ fn main() {
 
             Ok(())
         }
-        .instrument(info_span!("server"))
+        .instrument(info_span!("server0"))
+    });
+
+    sim.host("server1", move || {
+        let greeter = greeter1.clone();
+        let tx = tx1.clone(); // Clone tx here
+        async move {
+            Server::builder(from_stream(async_stream::stream! {
+                let listener = net::TcpListener::bind(addr1).await?;
+                let mut rx = tx.clone().subscribe();
+                loop {
+                    tokio::select! {
+                        res = listener.accept() => {
+                            yield res.map(|(s, _)| s);
+                        }
+                        peer_message = rx.recv() => {
+                            println!("Message received {:?}", peer_message);
+                        }
+                    }
+                }
+            }))
+            .serve(Shared::new(greeter))
+            .await
+            .unwrap();
+
+            Ok(())
+        }
+        .instrument(info_span!("server1"))
     });
 
     sim.client(
         "client",
         async move {
-            let ch = Endpoint::new("http://server:9998")?
+            let ch = Endpoint::new("http://server0:9998")?
                 .connect_with_connector(connector::connector())
                 .await?;
             let mut greeter_client = MulticastClient::new(ch);
@@ -140,6 +163,18 @@ where
             message: "Message received".to_string(),
         }))
     }
+}
+
+fn generate_multicast_server(
+    tx: broadcast::Sender<RmcPeerMessage>,
+    signing_key: &[u8; 32],
+) -> MulticastServer<MyMulticaster<SigningKey>>
+{
+    let signing_key = SigningKey::from_bytes(signing_key);
+    MulticastServer::new(MyMulticaster {
+        sender: tx.clone(),
+        signing_key,
+    })
 }
 
 mod connector {
