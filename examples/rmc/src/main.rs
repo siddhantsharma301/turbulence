@@ -1,19 +1,28 @@
-use axum::extract::Path;
-use axum::response::Response;
-use axum::routing::get;
-use axum::Router;
-use axum::{body::Body, http::Request};
+use ed25519::Signature;
+use ed25519_dalek::{Signer, SigningKey, Verifier};
 use hyper::server::accept::from_stream;
-use hyper::{Client, Server, Uri};
+use hyper::Server;
+use sha2::{Digest, Sha512};
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::broadcast;
+use tonic::transport::Endpoint;
+use tonic::Status;
+use tonic::{Request, Response};
 use tower::make::Shared;
 use tracing::{info_span, Instrument};
 use turmoil::{net, Builder};
 
-use std::ffi::OsString;
+use std::marker::{Send, Sync};
+
+#[allow(non_snake_case)]
+mod proto {
+    tonic::include_proto!("rmc");
+}
+
+use proto::multicast_server::{Multicast, MulticastServer};
+use proto::{RmcMessage, RmcResponse};
+
+use crate::proto::multicast_client::MulticastClient;
 
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
@@ -22,45 +31,39 @@ fn main() {
 
     tracing_subscriber::fmt::init();
 
-    let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9997);
+    let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
+    // let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
 
-    let mut sim = Builder::new()
-        .simulation_duration(Duration::from_secs(60))
-        .min_message_latency(Duration::from_millis(1))
-        .max_message_latency(Duration::from_millis(5))
-        .build();
+    let mut sim = Builder::new().build();
 
-    let counter_path = "counter.txt";
+    let (tx, _rx) = broadcast::channel::<RmcPeerMessage>(1);
+
+    let signing_key: SigningKey = SigningKey::from_bytes(&[0u8; 32]);
+
+    let greeter = MulticastServer::new(MyMulticaster {
+        sender: tx.clone(),
+        signing_key,
+    });
 
     sim.host("server", move || {
-        let counter_value = Arc::new(Mutex::new(0));
-        let router = Router::new().route(
-            "/greet/:name",
-            get(move |Path(name): Path<String>| async move {
-                let mut counter = counter_value.lock().await;
-                *counter += 1;
-                let ctr_os: OsString = counter_path.to_string().into();
-                let _ = turmoil::fs::file_system::append(
-                    ctr_os.clone(),
-                    counter.to_string().into_bytes(),
-                ).await;
-                if let Ok(val) = turmoil::read(ctr_os.clone()).await {
-                    println!("value in file is {:?}", val);
-                } else {
-                    panic!("Failed to read value from file");
-                }
-                format!("Hello {name} counter is {counter}!")
-            }),
-        );
-
+        let greeter = greeter.clone();
+        let tx = tx.clone(); // Clone tx here
         async move {
             Server::builder(from_stream(async_stream::stream! {
                 let listener = net::TcpListener::bind(addr0).await?;
+                let mut rx = tx.clone().subscribe();
                 loop {
-                    yield listener.accept().await.map(|(s, _)| s);
+                    tokio::select! {
+                        res = listener.accept() => {
+                            yield res.map(|(s, _)| s);
+                        }
+                        _ = rx.recv() => {
+                            // Handle broadcast message
+                        }
+                    }
                 }
             }))
-            .serve(Shared::new(router))
+            .serve(Shared::new(greeter))
             .await
             .unwrap();
 
@@ -72,29 +75,15 @@ fn main() {
     sim.client(
         "client",
         async move {
-            let client = Client::builder().build(connector::connector());
+            let ch = Endpoint::new("http://server:9998")?
+                .connect_with_connector(connector::connector())
+                .await?;
+            let mut greeter_client = MulticastClient::new(ch);
 
-            // turmoil::hold("client", "server");
-            // turmoil::corrupt("client", "server");
-            // turmoil::release("client", "server");
-
-            let mut request = Request::new(Body::empty());
-            *request.uri_mut() = Uri::from_static("http://server:9997/greet/foo");
-            let res = client.request(request).await?;
-
-            let (parts, body) = res.into_parts();
-            let body = hyper::body::to_bytes(body).await?;
-            let res = Response::from_parts(parts, body);
-
-            tracing::info!("Got response: {:?}", res);
-
-            let mut request = Request::new(Body::empty());
-            *request.uri_mut() = Uri::from_static("http://server:9997/greet/foo");
-            let res = client.request(request).await?;
-
-            let (parts, body) = res.into_parts();
-            let body = hyper::body::to_bytes(body).await?;
-            let res = Response::from_parts(parts, body);
+            let request = Request::new(RmcMessage {
+                message: "foo".into(),
+            });
+            let res = greeter_client.send(request).await?;
 
             tracing::info!("Got response: {:?}", res);
 
@@ -104,6 +93,53 @@ fn main() {
     );
 
     sim.run().unwrap();
+}
+
+#[derive(Clone, Debug)]
+struct RmcPeerMessage {
+    data: Vec<u8>,
+    signature: Vec<Signature>,
+}
+
+pub struct MyMulticaster<S>
+where
+    S: Signer<Signature>,
+{
+    sender: broadcast::Sender<RmcPeerMessage>,
+    signing_key: S,
+}
+
+impl<S> MyMulticaster<S> where S: Signer<Signature> {}
+
+#[tonic::async_trait]
+impl<S> Multicast for MyMulticaster<S>
+where
+    S: 'static + Signer<Signature> + Send + Sync,
+{
+    async fn send(&self, request: Request<RmcMessage>) -> Result<Response<RmcResponse>, Status> {
+        let message = request.into_inner();
+        println!("Received message: {}", message.message);
+
+        let mut hasher = Sha512::new();
+        hasher.update(message.clone().message);
+        let hash = hasher.finalize();
+        let sig = self.signing_key.sign(&hash);
+
+        let peer_message = RmcPeerMessage {
+            data: hash.to_vec(),
+            signature: Vec::from([sig]),
+        };
+
+        // Send the message to all peers.
+        match self.sender.send(peer_message) {
+            Ok(_) => println!("Message sent to peers"),
+            Err(_) => println!("Failed to send message to peers"),
+        }
+
+        Ok(Response::new(RmcResponse {
+            message: "Message received".to_string(),
+        }))
+    }
 }
 
 mod connector {

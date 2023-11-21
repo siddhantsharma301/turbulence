@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package rmc;
+
+service Multicast {
+  rpc Send (RmcMessage) returns (RmcResponse) {};
+}
+
+message RmcMessage {
+  string message = 1;
+}
+
+message RmcResponse {
+  string message = 1;
+}
