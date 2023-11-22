@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::marker::{Send, Sync};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::unix::ffi::OsStringExt;
+use std::time::Duration;
 
 // Turmoil and server imports
 use hyper::server::accept::from_stream;
@@ -12,6 +13,8 @@ use tonic::Status;
 use tonic::{Request, Response};
 use tower::make::Shared;
 use tracing::Instrument;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::FmtSubscriber;
 use turmoil::{net, Builder, Sim, TurmoilMessage};
 
 // Application specific imports
@@ -39,16 +42,31 @@ fn main() {
         std::env::set_var("RUST_LOG", "info");
     }
 
-    tracing_subscriber::fmt::init();
+    // tracing_subscriber::fmt::init();
+    let file_appender = RollingFileAppender::new(
+        Rotation::NEVER,
+        "/path/to/logs",
+        "log",
+    );
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let subscriber = FmtSubscriber::builder()
+        .pretty()
+        .with_writer(non_blocking)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let rng = SmallRng::from_entropy();
-
-    let mut sim = generate_server_client_configuration(rng);
+    let duration = Duration::from_secs(60);
+    let mut sim = generate_server_client_configuration(rng, duration);
     sim.run().unwrap();
 }
 
-fn generate_server_client_configuration(mut rng: SmallRng) -> Sim<'static> {
-    let mut sim = Builder::new().rng(rng.clone()).build();
+fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -> Sim<'static> {
+    let mut sim = Builder::new()
+        .rng(rng.clone())
+        .simulation_duration(duration)
+        .build();
+
     let num_server = rng.gen_range(2..10);
     let num_client = rng.gen_range(1..num_server);
 
@@ -232,7 +250,7 @@ where
     S: Signer<Signature>,
 {
     sender: broadcast::Sender<RmcPeerMessage>,
-    pub signing_key: S,
+    signing_key: S,
     verifying_key: VerifyingKey,
 }
 
