@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::marker::{Send, Sync};
 use std::net::{IpAddr, Ipv4Addr};
@@ -42,18 +43,18 @@ fn main() {
         std::env::set_var("RUST_LOG", "info");
     }
 
-    // tracing_subscriber::fmt::init();
-    let file_appender = RollingFileAppender::new(
-        Rotation::NEVER,
-        "/path/to/logs",
-        "log",
-    );
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-    let subscriber = FmtSubscriber::builder()
-        .pretty()
-        .with_writer(non_blocking)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    tracing_subscriber::fmt::init();
+    // let file_appender = RollingFileAppender::new(
+    //     Rotation::NEVER,
+    //     "/path/to/logs",
+    //     "log",
+    // );
+    // let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    // let subscriber = FmtSubscriber::builder()
+    //     .pretty()
+    //     .with_writer(non_blocking)
+    //     .finish();
+    // tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let rng = SmallRng::from_entropy();
     let duration = Duration::from_secs(60);
@@ -67,7 +68,7 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
         .simulation_duration(duration)
         .build();
 
-    let num_server = rng.gen_range(2..10);
+    let num_server = rng.gen_range(2..5);
     let num_client = rng.gen_range(1..num_server);
 
     let (tx, _) = broadcast::channel::<RmcPeerMessage>(16);
@@ -165,57 +166,56 @@ async fn process_peer_message(
     tx: broadcast::Sender<RmcPeerMessage>,
 ) {
     let digest = peer_message.data.clone();
-    if peer_message.signatures.len() != peer_message.verifying_keys.len() {
-        tracing::error!("mismatched signature and verifying key lengths!");
-        return;
-    }
-    let mut signatures = peer_message.signatures;
-    let mut verifying_keys = peer_message.verifying_keys.clone();
-    for (key, sig) in peer_message.verifying_keys.iter().zip(signatures.iter()) {
-        if !key.verify(&digest, sig).is_ok() {
-            tracing::error!("mismatched signature for verifying key!");
-            return;
-        }
-    }
 
+    let mut unique_pairs: HashMap<VerifyingKey, Signature> = peer_message
+        .signatures
+        .iter()
+        .filter_map(|(sig, vk)| {
+            if vk.verify(&digest, sig).is_ok() {
+                Some((vk.clone(), sig.clone()))
+            } else {
+                tracing::info!("unable to verify current signature, proceeding...");
+                None
+            }
+        })
+        .collect();
     let my_sig = signing_key.sign(&digest);
-    signatures.push(my_sig);
-    verifying_keys.push(signing_key.verifying_key());
-    peer_message.signatures = signatures.clone();
-    peer_message.verifying_keys = verifying_keys.clone();
+    let my_ver = signing_key.verifying_key();
+    unique_pairs.insert(my_ver, my_sig);
 
-    if (signatures.len() as u64) < RMC_THRESHOLD {
-        match tx.send(peer_message) {
+    peer_message.signatures = unique_pairs
+        .into_iter()
+        .map(|(vk, sig)| (sig, vk))
+        .collect();
+
+    if (peer_message.signatures.len() as u64) < RMC_THRESHOLD + 1 {
+        match tx.send(peer_message.clone()) {
             Ok(_) => {}
             Err(_) => tracing::info!("Failed to send message to peers"),
         }
     }
 
-    let comma_separated: String = signatures
+    let comma_separated: String = peer_message
+        .signatures
         .iter()
-        .map(|sig| sig.to_vec())
-        .map(|bytes| {
-            bytes
-                .iter()
-                .map(|&x| x.to_string())
-                .collect::<Vec<String>>()
-                .join(",")
+        .map(|(sig, key)| {
+            format!(
+                "{}-{}",
+                sig.to_string(),
+                hex::encode(&key.to_bytes())
+            )
         })
         .collect::<Vec<String>>()
         .join(",");
     let path = OsString::from_vec(hex::encode(&digest.clone()).into());
-    if !turmoil::has(path.clone()).await {
-        let _ = turmoil::append(path, comma_separated.into()).await;
-    } else {
-        let _ = turmoil::write(path, comma_separated.into()).await;
-    }
+    let _ = turmoil::write(path, comma_separated.into()).await;
 }
 
 #[derive(Clone, Debug)]
 struct RmcPeerMessage {
     data: Vec<u8>,
-    signatures: Vec<Signature>,
-    verifying_keys: Vec<VerifyingKey>,
+    signatures: Vec<(Signature, VerifyingKey)>,
+    // verifying_keys: Vec<VerifyingKey>,
 }
 
 impl TurmoilMessage for RmcPeerMessage {
@@ -238,7 +238,8 @@ impl TurmoilMessage for RmcPeerMessage {
                     rng.fill_bytes(&mut rand_data);
                     let rand_data: &[u8; 64] = rand_data.as_slice().try_into().unwrap();
                     let rand_sig = Signature::from_bytes(rand_data);
-                    self.signatures[index] = rand_sig;
+                    let (_, ver) = self.signatures[index];
+                    self.signatures[index] = (rand_sig, ver);
                 }
             }
         }
@@ -270,8 +271,7 @@ where
 
         let peer_message = RmcPeerMessage {
             data: hash.to_vec(),
-            signatures: Vec::from([sig]),
-            verifying_keys: Vec::from([self.verifying_key]),
+            signatures: Vec::from([(sig, self.verifying_key)]),
         };
 
         // Send the message to all peers.
