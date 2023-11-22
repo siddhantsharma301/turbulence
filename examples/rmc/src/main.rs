@@ -3,6 +3,8 @@ use ed25519_dalek::{Signer, SigningKey, Verifier};
 use hex;
 use hyper::server::accept::from_stream;
 use hyper::Server;
+use rand::Rng;
+use rand::{rngs::SmallRng, RngCore, SeedableRng};
 use sha2::{Digest, Sha512};
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr};
@@ -13,7 +15,7 @@ use tonic::Status;
 use tonic::{Request, Response};
 use tower::make::Shared;
 use tracing::{info_span, Instrument};
-use turmoil::{net, Builder};
+use turmoil::{net, Builder, Message};
 
 use std::marker::{Send, Sync};
 
@@ -47,7 +49,9 @@ fn main() {
     let (signing_key_1, greeter1) = generate_multicast_server(tx1.clone(), &[1u8; 32]);
     let (signing_key_2, greeter2) = generate_multicast_server(tx2.clone(), &[2u8; 32]);
 
-    let mut sim = Builder::new().build();
+    let seed = [0u8; 32];
+    let rng = SmallRng::from_seed(seed);
+    let mut sim = Builder::new().rng(rng).build();
 
     sim.host("server0", move || {
         let greeter = greeter0.clone();
@@ -183,6 +187,45 @@ fn main() {
 struct RmcPeerMessage {
     data: Vec<u8>,
     signatures: Vec<Signature>,
+}
+
+impl Message for RmcPeerMessage {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut data = self.data.clone();
+        let sig_bytes: Vec<_> = self
+            .signatures
+            .iter()
+            .map(|sig| sig.to_vec())
+            .flatten()
+            .collect();
+        data.extend(sig_bytes);
+        data
+    }
+
+    fn randomly_corrupt(&mut self, mut rng: impl RngCore + 'static) {
+        let failure = rng.gen::<bool>();
+        if failure {
+            let fail_data = rng.gen::<bool>();
+            let fail_sig = rng.gen::<bool>();
+            if fail_data {
+                let mut rand_data = vec![0u8; self.data.len()];
+                rng.fill_bytes(&mut rand_data);
+                self.data = rand_data;
+            }
+            if fail_sig {
+                let num_to_mutate = rng.gen_range(0..self.signatures.len() + 1);
+
+                for _ in 0..num_to_mutate {
+                    let index = rng.gen_range(0..self.signatures.len());
+                    let mut rand_data = vec![0u8; 64];
+                    rng.fill_bytes(&mut rand_data);
+                    let rand_data: &[u8; 64] = rand_data.as_slice().try_into().unwrap();
+                    let rand_sig = Signature::from_bytes(rand_data);
+                    self.signatures[index] = rand_sig;
+                }
+            }
+        }
+    }
 }
 
 pub struct MyMulticaster<S>
