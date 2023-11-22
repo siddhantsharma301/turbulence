@@ -95,12 +95,10 @@ pub use dns::{ToIpAddr, ToIpAddrs, ToSocketAddrs};
 
 mod envelope;
 use envelope::Envelope;
-pub use envelope::{Datagram, Protocol, Segment};
+pub use envelope::{Datagram, Protocol, Segment, TurmoilMessage};
 
 mod error;
 pub use error::Result;
-use fs::open_options;
-use tokio::io::AsyncWriteExt;
 
 mod host;
 pub use host::elapsed;

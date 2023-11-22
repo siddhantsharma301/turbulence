@@ -2,7 +2,7 @@ use std::{fmt::Display, net::SocketAddr};
 
 use bytes::Bytes;
 use tokio::sync::oneshot;
-use rand::Rng;
+use rand::{Rng, RngCore};
 
 #[derive(Debug)]
 pub(crate) struct Envelope {
@@ -114,4 +114,8 @@ pub(crate) fn hex(
     }
 
     write!(f, "]")
+}
+
+pub trait TurmoilMessage {
+    fn randomly_corrupt(&mut self, rng: impl RngCore + 'static);
 }

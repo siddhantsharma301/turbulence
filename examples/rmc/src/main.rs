@@ -1,19 +1,38 @@
-use axum::extract::Path;
-use axum::response::Response;
-use axum::routing::get;
-use axum::Router;
-use axum::{body::Body, http::Request};
-use hyper::server::accept::from_stream;
-use hyper::{Client, Server, Uri};
+use std::ffi::OsString;
+use std::marker::{Send, Sync};
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
+use std::os::unix::ffi::OsStringExt;
+
+// Turmoil and server imports
+use hyper::server::accept::from_stream;
+use hyper::Server;
+use tokio::sync::broadcast;
+use tonic::transport::Endpoint;
+use tonic::Status;
+use tonic::{Request, Response};
 use tower::make::Shared;
 use tracing::{info_span, Instrument};
-use turmoil::{net, Builder};
+use turmoil::{net, Builder, TurmoilMessage};
 
-use std::ffi::OsString;
+// Application specific imports
+use ed25519::Signature;
+use ed25519_dalek::{Signer, SigningKey, Verifier};
+use hex;
+use rand::Rng;
+use rand::{rngs::SmallRng, RngCore, SeedableRng};
+use sha2::{Digest, Sha512};
+
+#[allow(non_snake_case)]
+mod proto {
+    tonic::include_proto!("rmc");
+}
+
+use proto::multicast_server::{Multicast, MulticastServer};
+use proto::{RmcMessage, RmcResponse};
+
+use crate::proto::multicast_client::MulticastClient;
+
+const RMC_THRESHOLD: u64 = 3;
 
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
@@ -22,88 +41,286 @@ fn main() {
 
     tracing_subscriber::fmt::init();
 
-    let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9997);
+    let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
+    let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9998);
+    let addr2 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9997);
 
-    let mut sim = Builder::new()
-        .simulation_duration(Duration::from_secs(60))
-        .min_message_latency(Duration::from_millis(1))
-        .max_message_latency(Duration::from_millis(5))
-        .build();
+    let (tx, _rx) = broadcast::channel::<RmcPeerMessage>(16);
+    let tx0 = tx.clone();
+    let tx1 = tx.clone();
+    let tx2 = tx.clone();
+    let (signing_key_0, greeter0) = generate_multicast_server(tx0.clone(), &[0u8; 32]);
+    let (signing_key_1, greeter1) = generate_multicast_server(tx1.clone(), &[1u8; 32]);
+    let (signing_key_2, greeter2) = generate_multicast_server(tx2.clone(), &[2u8; 32]);
 
-    let counter_path = "counter.txt";
+    let seed = [1u8; 32];
+    let rng = SmallRng::from_seed(seed);
+    let rng1 = rng.clone();
+    let rng2 = rng.clone();
+    let mut sim = Builder::new().rng(rng.clone()).build();
 
-    sim.host("server", move || {
-        let counter_value = Arc::new(Mutex::new(0));
-        let router = Router::new().route(
-            "/greet/:name",
-            get(move |Path(name): Path<String>| async move {
-                let mut counter = counter_value.lock().await;
-                *counter += 1;
-                let ctr_os: OsString = counter_path.to_string().into();
-                let _ = turmoil::fs::file_system::append(
-                    ctr_os.clone(),
-                    counter.to_string().into_bytes(),
-                ).await;
-                if let Ok(val) = turmoil::read(ctr_os.clone()).await {
-                    println!("value in file is {:?}", val);
-                } else {
-                    panic!("Failed to read value from file");
-                }
-                format!("Hello {name} counter is {counter}!")
-            }),
-        );
 
+    sim.host("server0", move || {
+        let greeter = greeter0.clone();
+        let signing_key = signing_key_0.clone();
+        let tx = tx0.clone(); // Clone tx here
+        let rng = rng.clone();
         async move {
             Server::builder(from_stream(async_stream::stream! {
                 let listener = net::TcpListener::bind(addr0).await?;
+                let mut rx = tx.clone().subscribe();
                 loop {
-                    yield listener.accept().await.map(|(s, _)| s);
+                    tokio::select! {
+                        res = listener.accept() => {
+                            yield res.map(|(s, _)| s);
+                        }
+                        peer_message = rx.recv() => {
+                            let mut peer_message = peer_message.unwrap();
+                            peer_message.randomly_corrupt(rng.clone());
+                            process_peer_message(peer_message, &signing_key, tx.clone()).await
+                        }
+                    }
                 }
             }))
-            .serve(Shared::new(router))
+            .serve(Shared::new(greeter))
             .await
             .unwrap();
 
             Ok(())
         }
-        .instrument(info_span!("server"))
+        .instrument(info_span!("server0"))
+    });
+
+    sim.host("server1", move || {
+        let greeter = greeter1.clone();
+        let signing_key = signing_key_1.clone();
+        let tx = tx1.clone(); // Clone tx here
+        let rng = rng1.clone();
+        async move {
+            Server::builder(from_stream(async_stream::stream! {
+                let listener = net::TcpListener::bind(addr1).await?;
+                let mut rx = tx.clone().subscribe();
+                loop {
+                    tokio::select! {
+                        res = listener.accept() => {
+                            yield res.map(|(s, _)| s);
+                        }
+                        peer_message = rx.recv() => {
+                            let mut peer_message = peer_message.unwrap();
+                            peer_message.randomly_corrupt(rng.clone());
+                            process_peer_message(peer_message, &signing_key, tx.clone()).await
+                        }
+                    }
+                }
+            }))
+            .serve(Shared::new(greeter))
+            .await
+            .unwrap();
+
+            Ok(())
+        }
+        .instrument(info_span!("server1"))
+    });
+
+    sim.host("server2", move || {
+        let greeter = greeter2.clone();
+        let signing_key = signing_key_2.clone();
+        let tx = tx2.clone(); // Clone tx here
+        let rng = rng2.clone();
+        async move {
+            Server::builder(from_stream(async_stream::stream! {
+                let listener = net::TcpListener::bind(addr2).await?;
+                let mut rx = tx.clone().subscribe();
+                loop {
+                    tokio::select! {
+                        res = listener.accept() => {
+                            yield res.map(|(s, _)| s);
+                        }
+                        peer_message = rx.recv() => {
+                            let mut peer_message = peer_message.unwrap();
+                            peer_message.randomly_corrupt(rng.clone());
+                            process_peer_message(peer_message, &signing_key, tx.clone()).await
+                        }
+                    }
+                }
+            }))
+            .serve(Shared::new(greeter))
+            .await
+            .unwrap();
+
+            Ok(())
+        }
+        .instrument(info_span!("server2"))
     });
 
     sim.client(
-        "client",
+        "client0",
         async move {
-            let client = Client::builder().build(connector::connector());
+            let ch = Endpoint::new("http://server0:9999")?
+                .connect_with_connector(connector::connector())
+                .await?;
+            let mut greeter_client = MulticastClient::new(ch);
 
-            // turmoil::hold("client", "server");
-            // turmoil::corrupt("client", "server");
-            // turmoil::release("client", "server");
-
-            let mut request = Request::new(Body::empty());
-            *request.uri_mut() = Uri::from_static("http://server:9997/greet/foo");
-            let res = client.request(request).await?;
-
-            let (parts, body) = res.into_parts();
-            let body = hyper::body::to_bytes(body).await?;
-            let res = Response::from_parts(parts, body);
-
-            tracing::info!("Got response: {:?}", res);
-
-            let mut request = Request::new(Body::empty());
-            *request.uri_mut() = Uri::from_static("http://server:9997/greet/foo");
-            let res = client.request(request).await?;
-
-            let (parts, body) = res.into_parts();
-            let body = hyper::body::to_bytes(body).await?;
-            let res = Response::from_parts(parts, body);
+            let request = Request::new(RmcMessage {
+                message: "foo".into(),
+            });
+            let res = greeter_client.send(request).await?;
 
             tracing::info!("Got response: {:?}", res);
 
             Ok(())
         }
-        .instrument(info_span!("client")),
+        .instrument(info_span!("client0")),
+    );
+
+    sim.client(
+        "client1",
+        async move {
+            let ch = Endpoint::new("http://server1:9998")?
+                .connect_with_connector(connector::connector())
+                .await?;
+            let mut greeter_client = MulticastClient::new(ch);
+
+            let request = Request::new(RmcMessage {
+                message: "gabba goo".into(),
+            });
+            let res = greeter_client.send(request).await?;
+
+            tracing::info!("Got response: {:?}", res);
+
+            Ok(())
+        }
+        .instrument(info_span!("client1")),
     );
 
     sim.run().unwrap();
+}
+
+#[derive(Clone, Debug)]
+struct RmcPeerMessage {
+    data: Vec<u8>,
+    signatures: Vec<Signature>,
+}
+
+impl TurmoilMessage for RmcPeerMessage {
+    fn randomly_corrupt(&mut self, mut rng: impl RngCore + 'static) {
+        let failure = rng.gen::<bool>();
+        if failure {
+            let fail_data = rng.gen::<bool>();
+            let fail_sig = rng.gen::<bool>();
+            if fail_data {
+                let mut rand_data = vec![0u8; self.data.len()];
+                rng.fill_bytes(&mut rand_data);
+                self.data = rand_data;
+            }
+            if fail_sig {
+                let num_to_mutate = rng.gen_range(0..self.signatures.len() + 1);
+
+                for _ in 0..num_to_mutate {
+                    let index = rng.gen_range(0..self.signatures.len());
+                    let mut rand_data = vec![0u8; 64];
+                    rng.fill_bytes(&mut rand_data);
+                    let rand_data: &[u8; 64] = rand_data.as_slice().try_into().unwrap();
+                    let rand_sig = Signature::from_bytes(rand_data);
+                    self.signatures[index] = rand_sig;
+                }
+            }
+        }
+    }
+}
+
+pub struct MyMulticaster<S>
+where
+    S: Signer<Signature>,
+{
+    sender: broadcast::Sender<RmcPeerMessage>,
+    pub signing_key: S,
+}
+
+impl<S> MyMulticaster<S> where S: Signer<Signature> {}
+
+#[tonic::async_trait]
+impl<S> Multicast for MyMulticaster<S>
+where
+    S: 'static + Signer<Signature> + Send + Sync,
+{
+    async fn send(&self, request: Request<RmcMessage>) -> Result<Response<RmcResponse>, Status> {
+        let message = request.into_inner();
+        println!("Received message: {}", message.message);
+
+        let mut hasher = Sha512::new();
+        hasher.update(message.clone().message);
+        let hash = hasher.finalize();
+        let sig = self.signing_key.sign(&hash);
+
+        let peer_message = RmcPeerMessage {
+            data: hash.to_vec(),
+            signatures: Vec::from([sig]),
+        };
+
+        // Send the message to all peers.
+        match self.sender.send(peer_message) {
+            Ok(_) => println!("Message sent to peers"),
+            Err(_) => println!("Failed to send message to peers"),
+        }
+
+        Ok(Response::new(RmcResponse {
+            message: "Message received".to_string(),
+        }))
+    }
+}
+
+fn generate_multicast_server(
+    tx: broadcast::Sender<RmcPeerMessage>,
+    signing_key: &[u8; 32],
+) -> (SigningKey, MulticastServer<MyMulticaster<SigningKey>>) {
+    let signing_key = SigningKey::from_bytes(signing_key);
+    (
+        signing_key.clone(),
+        MulticastServer::new(MyMulticaster {
+            sender: tx.clone(),
+            signing_key,
+        }),
+    )
+}
+
+async fn process_peer_message(
+    mut peer_message: RmcPeerMessage,
+    signing_key: &SigningKey,
+    tx: broadcast::Sender<RmcPeerMessage>,
+) {
+    let digest = peer_message.data.clone();
+    let mut signatures = peer_message.signatures;
+
+    let my_sig = signing_key.sign(&digest);
+    signatures.push(my_sig);
+    peer_message.signatures = signatures.clone();
+
+    if (signatures.len() as u64) < RMC_THRESHOLD {
+        match tx.send(peer_message) {
+            Ok(_) => {}
+            Err(_) => println!("Failed to send message to peers"),
+        }
+    }
+
+    let comma_separated: String = signatures
+        .iter()
+        .map(|sig| sig.to_vec())
+        .map(|bytes| {
+            bytes
+                .iter()
+                .map(|&x| x.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        })
+        .collect::<Vec<String>>()
+        .join(",");
+    let path = OsString::from_vec(hex::encode(&digest.clone()).into());
+    if !turmoil::has(path.clone()).await {
+        let _ = turmoil::append(path, comma_separated.into()).await;
+    } else {
+        let _ = turmoil::write(path, comma_separated.into()).await;
+    }
 }
 
 mod connector {
