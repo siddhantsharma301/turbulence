@@ -5,18 +5,18 @@ use std::os::unix::ffi::OsStringExt;
 
 // Turmoil and server imports
 use hyper::server::accept::from_stream;
-use hyper::{server, Server};
+use hyper::Server;
 use tokio::sync::broadcast;
 use tonic::transport::Endpoint;
 use tonic::Status;
 use tonic::{Request, Response};
 use tower::make::Shared;
-use tracing::{info_span, Instrument};
+use tracing::Instrument;
 use turmoil::{net, Builder, Sim, TurmoilMessage};
 
 // Application specific imports
 use ed25519::Signature;
-use ed25519_dalek::{Signer, SigningKey, Verifier};
+use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use hex;
 use rand::Rng;
 use rand::{rngs::SmallRng, RngCore, SeedableRng};
@@ -49,7 +49,7 @@ fn main() {
 
 fn generate_server_client_configuration(mut rng: SmallRng) -> Sim<'static> {
     let mut sim = Builder::new().rng(rng.clone()).build();
-    let num_server = rng.gen_range(2..5);
+    let num_server = rng.gen_range(2..10);
     let num_client = rng.gen_range(1..num_server);
 
     let (tx, _) = broadcast::channel::<RmcPeerMessage>(16);
@@ -60,7 +60,7 @@ fn generate_server_client_configuration(mut rng: SmallRng) -> Sim<'static> {
         let addr = (IpAddr::from(Ipv4Addr::UNSPECIFIED), port);
         let tx = tx.clone();
         let (signing_key, greeter) = generate_multicast_server(tx.clone(), &[i; 32]);
-        let rng = rng.clone();
+        let rng = SmallRng::from_entropy();
 
         sim.host(server_name, move || {
             let greeter = greeter.clone();
@@ -97,7 +97,7 @@ fn generate_server_client_configuration(mut rng: SmallRng) -> Sim<'static> {
     for i in 0..num_client {
         let client_name = format!("client{}", i);
         let server_url = format!("http://server{}:{}", i, 9999 - (i as u32));
-        let mut rng = rng.clone();
+        let mut rng = SmallRng::from_entropy();
         sim.client(
             client_name,
             async move {
@@ -130,11 +130,13 @@ fn generate_multicast_server(
     signing_key: &[u8; 32],
 ) -> (SigningKey, MulticastServer<MyMulticaster<SigningKey>>) {
     let signing_key = SigningKey::from_bytes(signing_key);
+    let verifying_key = signing_key.verifying_key();
     (
         signing_key.clone(),
         MulticastServer::new(MyMulticaster {
             sender: tx.clone(),
             signing_key,
+            verifying_key,
         }),
     )
 }
@@ -145,16 +147,29 @@ async fn process_peer_message(
     tx: broadcast::Sender<RmcPeerMessage>,
 ) {
     let digest = peer_message.data.clone();
+    if peer_message.signatures.len() != peer_message.verifying_keys.len() {
+        tracing::error!("mismatched signature and verifying key lengths!");
+        return;
+    }
     let mut signatures = peer_message.signatures;
+    let mut verifying_keys = peer_message.verifying_keys.clone();
+    for (key, sig) in peer_message.verifying_keys.iter().zip(signatures.iter()) {
+        if !key.verify(&digest, sig).is_ok() {
+            tracing::error!("mismatched signature for verifying key!");
+            return;
+        }
+    }
 
     let my_sig = signing_key.sign(&digest);
     signatures.push(my_sig);
+    verifying_keys.push(signing_key.verifying_key());
     peer_message.signatures = signatures.clone();
+    peer_message.verifying_keys = verifying_keys.clone();
 
     if (signatures.len() as u64) < RMC_THRESHOLD {
         match tx.send(peer_message) {
             Ok(_) => {}
-            Err(_) => println!("Failed to send message to peers"),
+            Err(_) => tracing::info!("Failed to send message to peers"),
         }
     }
 
@@ -182,6 +197,7 @@ async fn process_peer_message(
 struct RmcPeerMessage {
     data: Vec<u8>,
     signatures: Vec<Signature>,
+    verifying_keys: Vec<VerifyingKey>,
 }
 
 impl TurmoilMessage for RmcPeerMessage {
@@ -217,9 +233,10 @@ where
 {
     sender: broadcast::Sender<RmcPeerMessage>,
     pub signing_key: S,
+    verifying_key: VerifyingKey,
 }
 
-impl<S> MyMulticaster<S> where S: Signer<Signature> {}
+// impl<S, V> MyMulticaster<S, V> where S: Signer<Signature> {}
 
 #[tonic::async_trait]
 impl<S> Multicast for MyMulticaster<S>
@@ -228,7 +245,7 @@ where
 {
     async fn send(&self, request: Request<RmcMessage>) -> Result<Response<RmcResponse>, Status> {
         let message = request.into_inner();
-        println!("Received message: {}", message.message);
+        tracing::info!("Received message: {}", message.message);
 
         let mut hasher = Sha512::new();
         hasher.update(message.clone().message);
@@ -238,12 +255,13 @@ where
         let peer_message = RmcPeerMessage {
             data: hash.to_vec(),
             signatures: Vec::from([sig]),
+            verifying_keys: Vec::from([self.verifying_key]),
         };
 
         // Send the message to all peers.
         match self.sender.send(peer_message) {
-            Ok(_) => println!("Message sent to peers"),
-            Err(_) => println!("Failed to send message to peers"),
+            Ok(_) => {}
+            Err(_) => tracing::info!("Failed to send message to peers"),
         }
 
         Ok(Response::new(RmcResponse {
