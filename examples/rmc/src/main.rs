@@ -236,8 +236,6 @@ where
     verifying_key: VerifyingKey,
 }
 
-// impl<S, V> MyMulticaster<S, V> where S: Signer<Signature> {}
-
 #[tonic::async_trait]
 impl<S> Multicast for MyMulticaster<S>
 where
