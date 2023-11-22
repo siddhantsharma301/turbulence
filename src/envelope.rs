@@ -115,3 +115,9 @@ pub(crate) fn hex(
 
     write!(f, "]")
 }
+
+pub trait Message {
+    fn to_bytes(&self) -> Vec<u8>;
+
+    fn randomly_corrupt(&mut self);
+}
