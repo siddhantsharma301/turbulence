@@ -36,7 +36,7 @@ use proto::{RmcMessage, RmcResponse};
 
 use crate::proto::multicast_client::MulticastClient;
 
-const RMC_THRESHOLD: u64 = 3;
+const RMC_THRESHOLD: u64 = 2;
 
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
@@ -79,6 +79,7 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
         let addr = (IpAddr::from(Ipv4Addr::UNSPECIFIED), port);
         let tx = tx.clone();
         let (signing_key, greeter) = generate_multicast_server(tx.clone(), &[i; 32]);
+        let verifying_key = signing_key.verifying_key();
         let rng = SmallRng::from_entropy();
 
         sim.host(server_name, move || {
@@ -97,7 +98,11 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
                             }
                             peer_message = rx.recv() => {
                                 let mut peer_message = peer_message.unwrap();
+                                if peer_message.sender == verifying_key {
+                                    return ;
+                                }
                                 peer_message.randomly_corrupt(rng.clone());
+                                tracing::info!("received a message");
                                 process_peer_message(peer_message, &signing_key, tx.clone()).await
                             }
                         }
@@ -187,8 +192,10 @@ async fn process_peer_message(
         .into_iter()
         .map(|(vk, sig)| (sig, vk))
         .collect();
+    peer_message.sender = my_ver;
 
     if (peer_message.signatures.len() as u64) < RMC_THRESHOLD + 1 {
+        tracing::info!("not enough signatures yet, sending messages to peers");
         match tx.send(peer_message.clone()) {
             Ok(_) => {}
             Err(_) => tracing::info!("Failed to send message to peers"),
@@ -215,6 +222,7 @@ async fn process_peer_message(
 struct RmcPeerMessage {
     data: Vec<u8>,
     signatures: Vec<(Signature, VerifyingKey)>,
+    sender: VerifyingKey,
     // verifying_keys: Vec<VerifyingKey>,
 }
 
@@ -272,6 +280,7 @@ where
         let peer_message = RmcPeerMessage {
             data: hash.to_vec(),
             signatures: Vec::from([(sig, self.verifying_key)]),
+            sender: self.verifying_key
         };
 
         // Send the message to all peers.
