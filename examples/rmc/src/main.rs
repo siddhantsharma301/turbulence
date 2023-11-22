@@ -102,7 +102,6 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
                                     return ;
                                 }
                                 peer_message.randomly_corrupt(rng.clone());
-                                tracing::info!("received a message");
                                 process_peer_message(peer_message, &signing_key, tx.clone()).await
                             }
                         }
@@ -195,7 +194,6 @@ async fn process_peer_message(
     peer_message.sender = my_ver;
 
     if (peer_message.signatures.len() as u64) < RMC_THRESHOLD + 1 {
-        tracing::info!("not enough signatures yet, sending messages to peers");
         match tx.send(peer_message.clone()) {
             Ok(_) => {}
             Err(_) => tracing::info!("Failed to send message to peers"),
