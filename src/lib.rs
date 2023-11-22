@@ -95,7 +95,7 @@ pub use dns::{ToIpAddr, ToIpAddrs, ToSocketAddrs};
 
 mod envelope;
 use envelope::Envelope;
-pub use envelope::{Datagram, Protocol, Segment, Message};
+pub use envelope::{Datagram, Protocol, Segment, TurmoilMessage};
 
 mod error;
 pub use error::Result;

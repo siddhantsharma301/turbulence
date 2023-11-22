@@ -116,8 +116,6 @@ pub(crate) fn hex(
     write!(f, "]")
 }
 
-pub trait Message {
-    fn to_bytes(&self) -> Vec<u8>;
-
+pub trait TurmoilMessage {
     fn randomly_corrupt(&mut self, rng: impl RngCore + 'static);
 }

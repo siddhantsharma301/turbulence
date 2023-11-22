@@ -1,23 +1,26 @@
-use ed25519::Signature;
-use ed25519_dalek::{Signer, SigningKey, Verifier};
-use hex;
-use hyper::server::accept::from_stream;
-use hyper::Server;
-use rand::Rng;
-use rand::{rngs::SmallRng, RngCore, SeedableRng};
-use sha2::{Digest, Sha512};
 use std::ffi::OsString;
+use std::marker::{Send, Sync};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::unix::ffi::OsStringExt;
+
+// Turmoil and server imports
+use hyper::server::accept::from_stream;
+use hyper::Server;
 use tokio::sync::broadcast;
 use tonic::transport::Endpoint;
 use tonic::Status;
 use tonic::{Request, Response};
 use tower::make::Shared;
 use tracing::{info_span, Instrument};
-use turmoil::{net, Builder, Message};
+use turmoil::{net, Builder, TurmoilMessage};
 
-use std::marker::{Send, Sync};
+// Application specific imports
+use ed25519::Signature;
+use ed25519_dalek::{Signer, SigningKey, Verifier};
+use hex;
+use rand::Rng;
+use rand::{rngs::SmallRng, RngCore, SeedableRng};
+use sha2::{Digest, Sha512};
 
 #[allow(non_snake_case)]
 mod proto {
@@ -41,6 +44,7 @@ fn main() {
     let addr0 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9999);
     let addr1 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9998);
     let addr2 = (IpAddr::from(Ipv4Addr::UNSPECIFIED), 9997);
+
     let (tx, _rx) = broadcast::channel::<RmcPeerMessage>(16);
     let tx0 = tx.clone();
     let tx1 = tx.clone();
@@ -49,14 +53,18 @@ fn main() {
     let (signing_key_1, greeter1) = generate_multicast_server(tx1.clone(), &[1u8; 32]);
     let (signing_key_2, greeter2) = generate_multicast_server(tx2.clone(), &[2u8; 32]);
 
-    let seed = [0u8; 32];
+    let seed = [1u8; 32];
     let rng = SmallRng::from_seed(seed);
-    let mut sim = Builder::new().rng(rng).build();
+    let rng1 = rng.clone();
+    let rng2 = rng.clone();
+    let mut sim = Builder::new().rng(rng.clone()).build();
+
 
     sim.host("server0", move || {
         let greeter = greeter0.clone();
         let signing_key = signing_key_0.clone();
         let tx = tx0.clone(); // Clone tx here
+        let rng = rng.clone();
         async move {
             Server::builder(from_stream(async_stream::stream! {
                 let listener = net::TcpListener::bind(addr0).await?;
@@ -67,7 +75,8 @@ fn main() {
                             yield res.map(|(s, _)| s);
                         }
                         peer_message = rx.recv() => {
-                            let peer_message = peer_message.unwrap();
+                            let mut peer_message = peer_message.unwrap();
+                            peer_message.randomly_corrupt(rng.clone());
                             process_peer_message(peer_message, &signing_key, tx.clone()).await
                         }
                     }
@@ -86,6 +95,7 @@ fn main() {
         let greeter = greeter1.clone();
         let signing_key = signing_key_1.clone();
         let tx = tx1.clone(); // Clone tx here
+        let rng = rng1.clone();
         async move {
             Server::builder(from_stream(async_stream::stream! {
                 let listener = net::TcpListener::bind(addr1).await?;
@@ -96,7 +106,8 @@ fn main() {
                             yield res.map(|(s, _)| s);
                         }
                         peer_message = rx.recv() => {
-                            let peer_message = peer_message.unwrap();
+                            let mut peer_message = peer_message.unwrap();
+                            peer_message.randomly_corrupt(rng.clone());
                             process_peer_message(peer_message, &signing_key, tx.clone()).await
                         }
                     }
@@ -115,6 +126,7 @@ fn main() {
         let greeter = greeter2.clone();
         let signing_key = signing_key_2.clone();
         let tx = tx2.clone(); // Clone tx here
+        let rng = rng2.clone();
         async move {
             Server::builder(from_stream(async_stream::stream! {
                 let listener = net::TcpListener::bind(addr2).await?;
@@ -125,7 +137,8 @@ fn main() {
                             yield res.map(|(s, _)| s);
                         }
                         peer_message = rx.recv() => {
-                            let peer_message = peer_message.unwrap();
+                            let mut peer_message = peer_message.unwrap();
+                            peer_message.randomly_corrupt(rng.clone());
                             process_peer_message(peer_message, &signing_key, tx.clone()).await
                         }
                     }
@@ -189,19 +202,7 @@ struct RmcPeerMessage {
     signatures: Vec<Signature>,
 }
 
-impl Message for RmcPeerMessage {
-    fn to_bytes(&self) -> Vec<u8> {
-        let mut data = self.data.clone();
-        let sig_bytes: Vec<_> = self
-            .signatures
-            .iter()
-            .map(|sig| sig.to_vec())
-            .flatten()
-            .collect();
-        data.extend(sig_bytes);
-        data
-    }
-
+impl TurmoilMessage for RmcPeerMessage {
     fn randomly_corrupt(&mut self, mut rng: impl RngCore + 'static) {
         let failure = rng.gen::<bool>();
         if failure {
