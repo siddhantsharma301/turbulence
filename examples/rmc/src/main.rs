@@ -57,7 +57,9 @@ fn main() {
     //     .finish();
     // tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let rng = SmallRng::from_entropy();
+    let seed: <SmallRng as SeedableRng>::Seed = rand::thread_rng().gen();
+    let rng = SmallRng::from_seed(seed);
+    tracing::info!("Simulation RNG seed: {:?}", seed);
     let duration = Duration::from_secs(60);
     let mut sim = generate_server_client_configuration(rng, duration);
     sim.run().unwrap();
@@ -81,7 +83,10 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
         let tx = tx.clone();
         let (signing_key, greeter) = generate_multicast_server(tx.clone(), &[i; 32]);
         let verifying_key = signing_key.verifying_key();
-        let rng = SmallRng::from_entropy();
+
+        let seed: <SmallRng as SeedableRng>::Seed = rand::thread_rng().gen();
+        let rng = SmallRng::from_seed(seed);
+        tracing::info!("Host {:?} RNG seed: {:?}", i, seed);
 
         sim.host(server_name, move || {
             let greeter = greeter.clone();
@@ -130,7 +135,9 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
         })
     }
 
-    let mut rng = SmallRng::from_entropy();
+    let seed: <SmallRng as SeedableRng>::Seed = rand::thread_rng().gen();
+    let mut rng = SmallRng::from_seed(seed);
+    tracing::info!("Clients RNG seed: {:?}", seed);
     for i in 0..num_client {
         let client_name = format!("client{}", i);
         let server_url = format!("http://server{}:{}", i, 9999 - (i as u32));
