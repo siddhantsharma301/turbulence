@@ -211,6 +211,9 @@ async fn process_peer_message(
             }
         })
         .collect();
+    if unique_pairs.len() == 0 {
+        return;
+    }
     let my_sig = signing_key.sign(&digest);
     let my_ver = signing_key.verifying_key();
     unique_pairs.insert(my_ver, my_sig);
@@ -249,14 +252,14 @@ impl TurmoilMessage for RmcPeerMessage {
     fn randomly_corrupt(&mut self, mut rng: impl RngCore + 'static) {
         let failure = rng.gen::<bool>();
         if failure {
-            let fail_data = rng.gen::<bool>();
-            let fail_sig = rng.gen::<bool>();
-            if fail_data {
+            let fail_data = rng.gen::<u8>();
+            let fail_sig = rng.gen::<u8>();
+            if fail_data < 1 {
                 let mut rand_data = vec![0u8; self.data.len()];
                 rng.fill_bytes(&mut rand_data);
                 self.data = rand_data;
             }
-            if fail_sig {
+            if fail_sig < 2 {
                 let num_to_mutate = rng.gen_range(0..self.signatures.len() + 1);
 
                 for _ in 0..num_to_mutate {
