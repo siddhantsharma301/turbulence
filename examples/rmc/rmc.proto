@@ -4,6 +4,7 @@ package rmc;
 
 service Multicast {
   rpc Send (RmcMessage) returns (RmcResponse) {};
+  rpc GetSignatures (RmcMessage) returns (RmcResponse) {};
 }
 
 message RmcMessage {

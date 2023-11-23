@@ -9,6 +9,7 @@ use std::time::Duration;
 use hyper::server::accept::from_stream;
 use hyper::Server;
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 use tonic::transport::Endpoint;
 use tonic::Status;
 use tonic::{Request, Response};
@@ -96,10 +97,24 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
                             res = listener.accept() => {
                                 yield res.map(|(s, _)| s);
                             }
-                            peer_message = rx.recv() => {
-                                let mut peer_message = peer_message.unwrap();
+                            msg = rx.recv() => {
+                                let mut peer_message: RmcPeerMessage;
+                                match msg {
+                                    Err(RecvError::Lagged(n)) => {
+                                        tracing::info!("Receiver lagged behind by {} messages", n);
+                                        rx.resubscribe();
+                                        continue;
+                                    },
+                                    Err(e) => {
+                                        tracing::info!("Receiver error: {:?}", e);
+                                        return;
+                                    }
+                                    Ok(msg) => {
+                                        peer_message = msg;
+                                    }
+                                }
                                 if peer_message.sender == verifying_key {
-                                    return ;
+                                    continue;
                                 }
                                 peer_message.randomly_corrupt(rng.clone());
                                 process_peer_message(peer_message, &signing_key, tx.clone()).await
@@ -109,18 +124,19 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
                 }))
                 .serve(Shared::new(greeter))
                 .await
-                .unwrap();
-
-                Ok(())
+                .map_err(|err| Box::new(err) as Box<dyn std::error::Error>)
             }
             .instrument(tracing::span!(tracing::Level::INFO, "server", i))
         })
     }
 
+    let mut rng = SmallRng::from_entropy();
     for i in 0..num_client {
         let client_name = format!("client{}", i);
         let server_url = format!("http://server{}:{}", i, 9999 - (i as u32));
-        let mut rng = SmallRng::from_entropy();
+        let rand_string = (0..10)
+            .map(|_| rng.sample(rand::distributions::Alphanumeric))
+            .collect::<Vec<_>>();
         sim.client(
             client_name,
             async move {
@@ -128,16 +144,17 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
                     .connect_with_connector(connector::connector())
                     .await?;
                 let mut greeter_client = MulticastClient::new(ch);
-
-                let rand_string = (0..10)
-                    .map(|_| rng.sample(rand::distributions::Alphanumeric))
-                    .collect::<Vec<_>>();
                 let request = Request::new(RmcMessage {
                     message: String::from_utf8_lossy(&rand_string).to_string(),
                 });
                 let res = greeter_client.send(request).await?;
+                tracing::info!("Client {:?} got send response: {:?}", i, res);
 
-                tracing::info!("Client {:?} got response: {:?}", i, res);
+                let request = Request::new(RmcMessage {
+                    message: String::from_utf8_lossy(&rand_string).to_string(),
+                });
+                let res = greeter_client.get_signatures(request).await?;
+                tracing::info!("Client {:?} got get signatures response: {:?}", i, res);
 
                 Ok(())
             }
@@ -178,7 +195,11 @@ async fn process_peer_message(
             if vk.verify(&digest, sig).is_ok() {
                 Some((vk.clone(), sig.clone()))
             } else {
-                tracing::info!("unable to verify current signature, proceeding...");
+                let vk_bytes = peer_message.sender.to_bytes();
+                tracing::info!(
+                    "unable to verify current signature from {:?}, proceeding...",
+                    hex::encode(vk_bytes)
+                );
                 None
             }
         })
@@ -203,17 +224,11 @@ async fn process_peer_message(
     let comma_separated: String = peer_message
         .signatures
         .iter()
-        .map(|(sig, key)| {
-            format!(
-                "{}-{}",
-                sig.to_string(),
-                hex::encode(&key.to_bytes())
-            )
-        })
+        .map(|(sig, key)| format!("({}-{})", sig.to_string(), hex::encode(&key.to_bytes())))
         .collect::<Vec<String>>()
         .join(",");
     let path = OsString::from_vec(hex::encode(&digest.clone()).into());
-    let _ = turmoil::write(path, comma_separated.into()).await;
+    let _ = turmoil::write(path.clone(), comma_separated.into()).await;
 }
 
 #[derive(Clone, Debug)]
@@ -221,7 +236,6 @@ struct RmcPeerMessage {
     data: Vec<u8>,
     signatures: Vec<(Signature, VerifyingKey)>,
     sender: VerifyingKey,
-    // verifying_keys: Vec<VerifyingKey>,
 }
 
 impl TurmoilMessage for RmcPeerMessage {
@@ -268,7 +282,7 @@ where
 {
     async fn send(&self, request: Request<RmcMessage>) -> Result<Response<RmcResponse>, Status> {
         let message = request.into_inner();
-        tracing::info!("Received message: {}", message.message);
+        tracing::info!("Send received message: {}", message.message);
 
         let mut hasher = Sha512::new();
         hasher.update(message.clone().message);
@@ -278,7 +292,7 @@ where
         let peer_message = RmcPeerMessage {
             data: hash.to_vec(),
             signatures: Vec::from([(sig, self.verifying_key)]),
-            sender: self.verifying_key
+            sender: self.verifying_key,
         };
 
         // Send the message to all peers.
@@ -290,6 +304,29 @@ where
         Ok(Response::new(RmcResponse {
             message: "Message received".to_string(),
         }))
+    }
+
+    async fn get_signatures(
+        &self,
+        request: Request<RmcMessage>,
+    ) -> Result<Response<RmcResponse>, Status> {
+        let message = request.into_inner();
+        tracing::info!("Get signatures received message: {}", message.message);
+
+        let mut hasher = Sha512::new();
+        hasher.update(message.clone().message);
+        let hash = hasher.finalize();
+
+        let path = OsString::from_vec(hex::encode(&hash).into());
+        let file = turmoil::read(path.clone()).await;
+        match file {
+            Ok(file) => Ok(Response::new(RmcResponse {
+                message: String::from_utf8_lossy(&file).to_string(),
+            })),
+            Err(e) => Ok(Response::new(RmcResponse {
+                message: e.to_string(),
+            })),
+        }
     }
 }
 
