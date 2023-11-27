@@ -72,7 +72,7 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
         .build();
 
     let num_server = rng.gen_range(2..5);
-    let num_client = rng.gen_range(1..num_server);
+    let num_client = rng.gen_range(2..num_server*2);
 
     let (tx, _) = broadcast::channel::<RmcPeerMessage>(16);
 
@@ -140,7 +140,8 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
     tracing::info!("Clients RNG seed: {:?}", seed);
     for i in 0..num_client {
         let client_name = format!("client{}", i);
-        let server_url = format!("http://server{}:{}", i, 9999 - (i as u32));
+        let server_num = rng.gen_range(0..num_server);
+        let server_url = format!("http://server{}:{}", server_num, 9999 - (server_num as u32));
         let rand_string = (0..10)
             .map(|_| rng.sample(rand::distributions::Alphanumeric))
             .collect::<Vec<_>>();
@@ -259,7 +260,7 @@ impl TurmoilMessage for RmcPeerMessage {
                 rng.fill_bytes(&mut rand_data);
                 self.data = rand_data;
             }
-            if fail_sig < 2 {
+            if fail_sig < 1 {
                 let num_to_mutate = rng.gen_range(0..self.signatures.len() + 1);
 
                 for _ in 0..num_to_mutate {
