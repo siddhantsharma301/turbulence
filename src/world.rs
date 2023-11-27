@@ -3,6 +3,7 @@ use crate::envelope::Protocol;
 use crate::ip::IpVersionAddrIter;
 use crate::{config, for_pairs, Dns, Host, ToIpAddr, ToIpAddrs, Topology, TRACING_TARGET};
 
+use fuse_backend_rs::api::filesystem::FileSystem;
 use indexmap::IndexMap;
 use rand::RngCore;
 use scoped_tls::scoped_thread_local;
@@ -12,9 +13,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 /// Tracks all the state for the simulated world.
-pub(crate) struct World {
+pub(crate) struct World<F: FileSystem> {
     /// Tracks all individual hosts
-    pub(crate) hosts: IndexMap<IpAddr, Host>,
+    pub(crate) hosts: IndexMap<IpAddr, Host<F>>,
 
     /// Tracks how each host is connected to each other.
     pub(crate) topology: Topology,
@@ -30,15 +31,15 @@ pub(crate) struct World {
     pub(crate) rng: Box<dyn RngCore>,
 }
 
-scoped_thread_local!(static CURRENT: RefCell<World>);
+scoped_thread_local!(static CURRENT: RefCell<World<dyn FileSystem<Inode = Type, Handle = Type>>>);
 
-impl World {
+impl<F: FileSystem> World<F> {
     /// Initialize a new world.
     pub(crate) fn new(
         link: config::Link,
         rng: Box<dyn RngCore>,
         addrs: IpVersionAddrIter,
-    ) -> World {
+    ) -> World<F> {
         World {
             hosts: IndexMap::new(),
             topology: Topology::new(link),
@@ -49,7 +50,7 @@ impl World {
     }
 
     /// Run `f` on the world.
-    pub(crate) fn current<R>(f: impl FnOnce(&mut World) -> R) -> R {
+    pub(crate) fn current<R>(f: impl FnOnce(&mut World<F>) -> R) -> R {
         CURRENT.with(|current| {
             let mut current = current.borrow_mut();
             f(&mut current)

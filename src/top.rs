@@ -4,6 +4,7 @@ use crate::host::Host;
 use crate::rt::Rt;
 use crate::{config, TRACING_TARGET};
 
+use fuse_backend_rs::api::filesystem::FileSystem;
 use indexmap::IndexMap;
 use rand::{Rng, RngCore};
 use rand_distr::{Distribution, Exp};
@@ -232,7 +233,7 @@ impl Topology {
     }
 
     // Move messages from any network links to the `dst` host.
-    pub(crate) fn deliver_messages(&mut self, rand: &mut dyn RngCore, dst: &mut Host) {
+    pub(crate) fn deliver_messages<F: FileSystem>(&mut self, rand: &mut dyn RngCore, dst: &mut Host<F>) {
         for (pair, link) in &mut self.links {
             if pair.0 == dst.addr || pair.1 == dst.addr {
                 link.deliver_messages(&self.config, rand, dst);
@@ -397,11 +398,11 @@ impl Link {
     // FIXME: This implementation does not respect message delivery order. If
     // host A and host B are ordered (by addr), and B sends before A, then this
     // method will deliver A's message before B's.
-    fn deliver_messages(
+    fn deliver_messages<F: FileSystem>(
         &mut self,
         global_config: &config::Link,
         rand: &mut dyn RngCore,
-        host: &mut Host,
+        host: &mut Host<F>,
     ) {
         let deliverable = self
             .deliverable

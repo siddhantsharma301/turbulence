@@ -1,5 +1,5 @@
 use crate::envelope::{hex, Datagram, Protocol, Segment, Syn};
-use crate::fs::FileSystem;
+// use crate::fs::FileSystem;
 use crate::net::{SocketPair, TcpListener, UdpSocket};
 use crate::world::World;
 use crate::{Envelope, TRACING_TARGET};
@@ -13,13 +13,14 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Notify};
 use tokio::time::{Duration, Instant};
+use fuse_backend_rs::api::filesystem::FileSystem;
 
 /// A host in the simulated network.
 ///
 /// Hosts have [`Udp`] and [`Tcp`] software available for networking.
 ///
 /// Both modes may be used simultaneously.
-pub(crate) struct Host {
+pub(crate) struct Host<F: FileSystem> {
     /// Host ip address.
     pub(crate) addr: IpAddr,
 
@@ -29,7 +30,7 @@ pub(crate) struct Host {
     /// L4 Transmission Control Protocol (TCP).
     pub(crate) tcp: Tcp,
 
-    pub(crate) file_system: FileSystem,
+    pub(crate) file_system: F,
 
     /// Ports 49152..=65535 for client connections.
     /// https://www.rfc-editor.org/rfc/rfc6335#section-6
@@ -42,13 +43,13 @@ pub(crate) struct Host {
     now: Option<Instant>,
 }
 
-impl Host {
-    pub(crate) fn new(addr: IpAddr, tcp_capacity: usize, udp_capacity: usize) -> Host {
+impl<F: FileSystem> Host<F> {
+    pub(crate) fn new(addr: IpAddr, tcp_capacity: usize, udp_capacity: usize, file_system: F) -> Host<F> {
         Host {
             addr,
             udp: Udp::new(udp_capacity),
             tcp: Tcp::new(tcp_capacity),
-            file_system: FileSystem::default(),
+            file_system,
             next_ephemeral_port: 49152,
             elapsed: Duration::ZERO,
             now: None,
