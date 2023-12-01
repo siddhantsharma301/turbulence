@@ -65,6 +65,115 @@ fn main() {
     sim.run().unwrap();
 }
 
+#[test_fuzz::test_fuzz]
+fn testy(seed: [u8; 32]) {
+    let rng = SmallRng::from_seed(seed);
+    let mut sim = generate_server_client_config_test(rng);
+    sim.run().unwrap();
+}
+
+fn generate_server_client_config_test(mut rng: SmallRng) -> Sim<'static> {
+    let mut sim = Builder::new()
+        .rng(rng.clone())
+        .build();
+
+    let num_server = 3;
+    let num_client = rng.gen_range(1..3);
+
+    let (tx, _) = broadcast::channel::<RmcPeerMessage>(16);
+
+    for i in 0..num_server {
+        let server_name = format!("server{}", i);
+        let port = 9999 - i as u16;
+        let addr = (IpAddr::from(Ipv4Addr::UNSPECIFIED), port);
+        let tx = tx.clone();
+        let (signing_key, greeter) = generate_multicast_server(tx.clone(), &[i; 32]);
+        let verifying_key = signing_key.verifying_key();
+
+        let seed: <SmallRng as SeedableRng>::Seed = rng.gen();
+        let rng = SmallRng::from_seed(seed);
+
+        sim.host(server_name, move || {
+            let greeter = greeter.clone();
+            let signing_key = signing_key.clone();
+            let tx = tx.clone();
+            let rng = rng.clone();
+            async move {
+                Server::builder(from_stream(async_stream::stream! {
+                    let listener = net::TcpListener::bind(addr).await?;
+                    let mut rx = tx.clone().subscribe();
+                    loop {
+                        tokio::select! {
+                            res = listener.accept() => {
+                                yield res.map(|(s, _)| s);
+                            }
+                            msg = rx.recv() => {
+                                let mut peer_message: RmcPeerMessage;
+                                match msg {
+                                    Err(RecvError::Lagged(_)) => {
+                                        rx.resubscribe();
+                                        continue;
+                                    },
+                                    Err(_) => {
+                                        return;
+                                    }
+                                    Ok(msg) => {
+                                        peer_message = msg;
+                                    }
+                                }
+                                if peer_message.sender == verifying_key {
+                                    continue;
+                                }
+                                peer_message.randomly_corrupt(rng.clone());
+                                process_peer_message(peer_message, &signing_key, tx.clone()).await
+                            }
+                        }
+                    }
+                }))
+                .serve(Shared::new(greeter))
+                .await
+                .map_err(|err| Box::new(err) as Box<dyn std::error::Error>)
+            }
+        })
+    }
+
+    let seed: <SmallRng as SeedableRng>::Seed = rng.gen();
+    let mut rng = SmallRng::from_seed(seed);
+    for i in 0..num_client {
+        let client_name = format!("client{}", i);
+        let server_num = rng.gen_range(0..num_server);
+        let server_url = format!("http://server{}:{}", server_num, 9999 - (server_num as u32));
+        let rand_string = (0..10)
+            .map(|_| rng.sample(rand::distributions::Alphanumeric))
+            .collect::<Vec<_>>();
+        sim.client(
+            client_name,
+            async move {
+                let ch = Endpoint::new(server_url)?
+                    .connect_with_connector(connector::connector())
+                    .await?;
+                let mut greeter_client = MulticastClient::new(ch);
+                let request = Request::new(RmcMessage {
+                    message: String::from_utf8_lossy(&rand_string).to_string(),
+                });
+                greeter_client.send(request).await?;
+                // tracing::info!("Client {:?} got send response: {:?}", i, res);
+
+                let request = Request::new(RmcMessage {
+                    message: String::from_utf8_lossy(&rand_string).to_string(),
+                });
+                greeter_client.get_signatures(request).await?;
+                // tracing::info!("Client {:?} got get signatures response: {:?}", i, res);
+
+                Ok(())
+            }
+            // .instrument(tracing::span!(tracing::Level::INFO, "client", i)),
+        );
+    }
+
+    sim
+}
+
 fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -> Sim<'static> {
     let mut sim = Builder::new()
         .rng(rng.clone())
@@ -251,8 +360,8 @@ struct RmcPeerMessage {
 
 impl TurmoilMessage for RmcPeerMessage {
     fn randomly_corrupt(&mut self, mut rng: impl RngCore + 'static) {
-        let failure = rng.gen::<bool>();
-        if failure {
+        let failure = rng.gen::<u8>();
+        if failure < 1 {
             let fail_data = rng.gen::<u8>();
             let fail_sig = rng.gen::<u8>();
             if fail_data < 1 {
