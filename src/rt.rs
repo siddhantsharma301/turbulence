@@ -70,7 +70,7 @@ impl<'a> Rt<'a> {
 
     pub(crate) fn host<F, Fut>(nodename: Arc<str>, software: F) -> Self
     where
-        F: Fn() -> Fut + 'a,
+        F: FnOnce() -> Fut + 'a + Clone,
         Fut: Future<Output = Result> + 'static,
     {
         let (tokio, local) = init();

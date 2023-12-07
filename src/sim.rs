@@ -96,7 +96,7 @@ impl<'a> Sim<'a> {
     /// multiple times.
     pub fn host<F, Fut>(&mut self, addr: impl ToIpAddr, host: F)
     where
-        F: Fn() -> Fut + 'a,
+        F: FnOnce() -> Fut + 'a + Clone,
         Fut: Future<Output = Result> + 'static,
     {
         let addr = self.lookup(addr);
