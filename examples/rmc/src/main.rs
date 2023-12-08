@@ -37,7 +37,7 @@ use proto::{RmcMessage, RmcResponse};
 
 use crate::proto::multicast_client::MulticastClient;
 
-const RMC_THRESHOLD: u64 = 2;
+const RMC_THRESHOLD: u64 = 1;
 
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
@@ -66,19 +66,22 @@ fn main() {
 }
 
 #[test_fuzz::test_fuzz]
-fn testy(seed: [u8; 32]) {
+fn testy(num_server: u8, num_client: u8) {
+    let seed = [num_server; 32];
     let rng = SmallRng::from_seed(seed);
-    let mut sim = generate_server_client_config_test(rng);
+    let mut sim = generate_server_client_config_test(rng, num_server, num_client);
     sim.run().unwrap();
 }
 
-fn generate_server_client_config_test(mut rng: SmallRng) -> Sim<'static> {
-    let mut sim = Builder::new()
-        .rng(rng.clone())
-        .build();
+fn generate_server_client_config_test(
+    mut rng: SmallRng,
+    num_server: u8,
+    num_client: u8,
+) -> Sim<'static> {
+    let mut sim = Builder::new().rng(rng.clone()).build();
 
-    let num_server = 3;
-    let num_client = rng.gen_range(1..3);
+    let num_server = num_server.min(1).max(3);
+    let num_client = num_client.min(1).max(3);
 
     let (tx, _) = broadcast::channel::<RmcPeerMessage>(16);
 
@@ -157,17 +160,15 @@ fn generate_server_client_config_test(mut rng: SmallRng) -> Sim<'static> {
                     message: String::from_utf8_lossy(&rand_string).to_string(),
                 });
                 greeter_client.send(request).await?;
-                // tracing::info!("Client {:?} got send response: {:?}", i, res);
 
                 let request = Request::new(RmcMessage {
                     message: String::from_utf8_lossy(&rand_string).to_string(),
                 });
-                greeter_client.get_signatures(request).await?;
-                // tracing::info!("Client {:?} got get signatures response: {:?}", i, res);
+                let res = greeter_client.get_signatures(request).await?.into_inner();
+                decode_get_sig(res.message, rand_string)?;
 
                 Ok(())
-            }
-            // .instrument(tracing::span!(tracing::Level::INFO, "client", i)),
+            }, // .instrument(tracing::span!(tracing::Level::INFO, "client", i)),
         );
     }
 
@@ -181,7 +182,7 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
         .build();
 
     let num_server = rng.gen_range(2..5);
-    let num_client = rng.gen_range(2..num_server*2);
+    let num_client = rng.gen_range(2..num_server * 2);
 
     let (tx, _) = broadcast::channel::<RmcPeerMessage>(16);
 
@@ -264,14 +265,15 @@ fn generate_server_client_configuration(mut rng: SmallRng, duration: Duration) -
                 let request = Request::new(RmcMessage {
                     message: String::from_utf8_lossy(&rand_string).to_string(),
                 });
-                let res = greeter_client.send(request).await?;
-                tracing::info!("Client {:?} got send response: {:?}", i, res);
+                let res = greeter_client.send(request).await?.into_inner();
+                tracing::info!("Client {:?} got send response: {:?}", i, res.message);
 
                 let request = Request::new(RmcMessage {
                     message: String::from_utf8_lossy(&rand_string).to_string(),
                 });
-                let res = greeter_client.get_signatures(request).await?;
+                let res = greeter_client.get_signatures(request).await?.into_inner();
                 tracing::info!("Client {:?} got get signatures response: {:?}", i, res);
+                decode_get_sig(res.message, rand_string)?;
 
                 Ok(())
             }
@@ -348,7 +350,41 @@ async fn process_peer_message(
         .collect::<Vec<String>>()
         .join(",");
     let path = OsString::from_vec(hex::encode(&digest.clone()).into());
-    let _ = turmoil::write(path.clone(), comma_separated.into()).await;
+    match turmoil::write(path.clone(), comma_separated.into()).await {
+        Ok(_) => {}
+        Err(_) => {
+            tracing::error!("failed to write!");
+        }
+    }
+}
+
+fn decode_get_sig(s: String, msg: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut hasher = Sha512::new();
+    hasher.update(msg);
+    let hash = hasher.finalize();
+
+    let pairs: Vec<&str> = s.split(',').collect();
+    for pair in pairs {
+        let parts: Vec<&str> = pair
+            .trim_matches(|c| c == '(' || c == ')')
+            .split('-')
+            .collect();
+        if parts.len() != 2 {
+            return Err("Invalid string format".into());
+        }
+
+        let sig_bytes = hex::decode(parts[0])?.try_into().unwrap();
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+
+        let key_bytes = hex::decode(parts[1])?.try_into().unwrap();
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)?;
+
+        // Verify the signature with the verifying key
+        key.verify(&hash, &sig)
+            .map_err(|_| "Invalid signature")?;
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -415,10 +451,24 @@ where
             sender: self.verifying_key,
         };
 
+        let comma_separated: String = peer_message
+            .signatures
+            .iter()
+            .map(|(sig, key)| format!("({}-{})", sig.to_string(), hex::encode(&key.to_bytes())))
+            .collect::<Vec<String>>()
+            .join(",");
+        let path = OsString::from_vec(hex::encode(&hash).into());
+        match turmoil::write(path.clone(), comma_separated.into()).await {
+            Ok(_) => {}
+            Err(_) => {
+                tracing::error!("failed to write!");
+            }
+        }
+
         // Send the message to all peers.
         match self.sender.send(peer_message) {
             Ok(_) => {}
-            Err(_) => tracing::info!("Failed to send message to peers"),
+            Err(_) => tracing::error!("Failed to send message to peers"),
         }
 
         Ok(Response::new(RmcResponse {

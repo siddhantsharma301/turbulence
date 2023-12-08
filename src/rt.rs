@@ -12,7 +12,7 @@ use tokio::time::{sleep, Duration, Instant};
 // To support re-creation, we need to store a factory of the future that
 // represents the software. This is somewhat annoying in that it requires
 // boxxing to avoid generics.
-type Software<'a> = Box<dyn Fn() -> Pin<Box<dyn Future<Output = Result>>> + 'a>;
+type Software<'a> = Box<dyn FnMut() -> Pin<Box<dyn Future<Output = Result>>> + 'a>;
 
 /// Runtime kinds.
 enum Kind<'a> {
@@ -68,14 +68,14 @@ impl<'a> Rt<'a> {
         }
     }
 
-    pub(crate) fn host<F, Fut>(nodename: Arc<str>, software: F) -> Self
+    pub(crate) fn host<F, Fut>(nodename: Arc<str>, mut software: F) -> Self
     where
-        F: FnOnce() -> Fut + 'a + Clone,
+        F: FnMut() -> Fut + 'a,
         Fut: Future<Output = Result> + 'static,
     {
         let (tokio, local) = init();
 
-        let software: Software = Box::new(move || Box::pin(software()));
+        let mut software: Software = Box::new(move || { Box::pin(software()) });
         let handle = with(&tokio, &local, || tokio::task::spawn_local(software()));
 
         Self {
@@ -183,7 +183,7 @@ impl<'a> Rt<'a> {
 
         self.cancel_tasks();
 
-        if let Kind::Host { software } = &self.kind {
+        if let Kind::Host { ref mut software } = &mut self.kind {
             let handle = with(&self.tokio, &self.local, || {
                 tokio::task::spawn_local(software())
             });

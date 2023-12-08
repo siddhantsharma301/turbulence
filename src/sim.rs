@@ -96,7 +96,7 @@ impl<'a> Sim<'a> {
     /// multiple times.
     pub fn host<F, Fut>(&mut self, addr: impl ToIpAddr, host: F)
     where
-        F: FnOnce() -> Fut + 'a + Clone,
+        F: FnMut() -> Fut + 'a,
         Fut: Future<Output = Result> + 'static,
     {
         let addr = self.lookup(addr);
@@ -395,7 +395,7 @@ mod test {
         rc::Rc,
         sync::{
             atomic::{AtomicU64, Ordering},
-            Arc,
+            Arc, Mutex,
         },
         time::Duration,
     };
@@ -540,6 +540,38 @@ mod test {
 
         // one tick to complete
         assert_eq!(tick, sim.elapsed() - start);
+
+        Ok(())
+    }
+
+    #[derive(Copy, Clone)]
+    struct TestStruct {
+        pub x: usize,
+        pub y: usize,
+    }
+
+    #[test]
+    fn thing() -> Result {
+        let mut sim = Builder::new().build();
+
+        let state = Arc::new(Mutex::new(TestStruct{ x: 0, y: 2}));
+        let state_clone = state.clone();
+
+        sim.host("server", move || {
+            let mut state = state.lock().unwrap();
+            state.x += 1;
+            state.y += 1;
+            async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(())
+            }
+        });
+
+        sim.run()?;
+
+        let state = state_clone.lock().unwrap();
+        assert_eq!(state.x, 1);
+        assert_eq!(state.y, 3);
 
         Ok(())
     }
