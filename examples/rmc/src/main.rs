@@ -66,7 +66,7 @@ fn main() {
 }
 
 #[test_fuzz::test_fuzz]
-fn testy(seed: [u8; 32]) {
+fn tester(seed: [u8; 32]) {
     let rng = SmallRng::from_seed(seed);
     let mut sim = generate_server_client_config_test(rng);
     sim.run().unwrap();
